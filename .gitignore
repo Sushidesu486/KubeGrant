@@ -1,0 +1,13 @@
+.DS_Store
+.tools/
+.cache/
+/bin/
+/data/
+coverage.out
+.env
+.env.*
+!.env.example
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+

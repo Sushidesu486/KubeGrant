@@ -1,0 +1,27 @@
+[Unit]
+Description=KubeGrant access management
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kubegrant
+Group=kubegrant
+EnvironmentFile=/etc/kubegrant/config.env
+Environment=KUBEGRANT_HTTP_ADDR=127.0.0.1:8080
+Environment=KUBEGRANT_STATIC_DIR=/opt/kubegrant/web
+Environment=KUBEGRANT_DATABASE_PATH=/var/lib/kubegrant/kubegrant.db
+ExecStart=/opt/kubegrant/kubegrant
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+StateDirectory=kubegrant
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kubegrant
+
+[Install]
+WantedBy=multi-user.target

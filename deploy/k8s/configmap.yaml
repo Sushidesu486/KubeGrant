@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubegrant-config
+data:
+  KUBEGRANT_PUBLIC_URL: https://kubegrant.clusters.zjusct.io
+  KUBEGRANT_HTTP_ADDR: :8080
+  KUBEGRANT_STATIC_DIR: /app/web
+  KUBEGRANT_DATABASE_PATH: /data/kubegrant.db
+  KUBEGRANT_LDAP_URLS: ldaps://ipa-01.clusters.zjusct.io:636,ldaps://ipa-02.clusters.zjusct.io:636,ldaps://ipa-03.clusters.zjusct.io:636
+  KUBEGRANT_LDAP_BASE_DN: dc=clusters,dc=zjusct,dc=io
+  KUBEGRANT_LDAP_CA_FILE: /etc/kubegrant/ipa/ca.crt
+  KUBEGRANT_ADMIN_GROUPS: admins
+  KUBEGRANT_SESSION_TTL: 30m
+  KUBEGRANT_GRANT_MAX_TTL: 720h
+  KUBEGRANT_CLUSTER_ID: zjusct
+  KUBEGRANT_PERMISSION_REF: cluster-admin
