@@ -4,7 +4,7 @@
 
 生产已实现 FreeIPA LDAPS 登录、会话、有限期/长期授权、管理员成员列表、审计、个人 kubeconfig 下载，以及独立控制器的集群权限执行和撤回。FreeIPA 的 `admins` 组映射为平台管理员；实际集群权限仍需显式授权。运行版本、权限差异、schema v2 迁移和回退步骤见 [发布说明](release-signing.md)。
 
-2026-10-16 已上线签发版本，服务端检查通过；用户真实账号领取与撤回验收待完成。保留现有独立运维入口，首次发布历史及本次签发发布记录见文末。
+2026-10-16 已上线签发版本，服务端检查通过；用户已确认真实账号领取、kubectl 访问与撤回后拒绝均正常。保留现有独立运维入口，首次发布历史及本次签发发布记录见文末。
 
 ## 1. 如何接入 FreeIPA
 
@@ -216,8 +216,8 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 
 外部回归命令：`bash scripts/check-public-entry.sh`。该检查从可直连校网入口的客户端执行，不携带 NetGATE cookie，也不通过本机 HTTP 代理；必须直接返回 200 和 KubeGrant 页面，302 到网关登录或 404 都会失败。修复前实测 FAIL/302，修复后实测 PASS/200。
 
-修复后 openng 的 4 个实例滚动重载完成，openng 与 kubegrant 两个 Argo Application 均为 Synced/Healthy，revision 为上述修正提交。原 HTTP 上游由 404 变为 200，内部 HTTPS 仍为 200。本机直连和通过现有 HTTP 代理访问外部入口均返回 200；内置浏览器实际加载了用户名、密码和“使用 FreeIPA 登录”表单。经完整外部路径复查，匿名成员/管理 API 为 401，错误 Origin 登录请求为 403，错误用户名为 invalid_credentials/401，静态页面、livez、readyz 和能力接口正常。真实账号登录及管理员映射仍待用户验收。
+修复后 openng 的 4 个实例滚动重载完成，openng 与 kubegrant 两个 Argo Application 均为 Synced/Healthy，revision 为上述修正提交。原 HTTP 上游由 404 变为 200，内部 HTTPS 仍为 200。本机直连和通过现有 HTTP 代理访问外部入口均返回 200；内置浏览器实际加载了用户名、密码和“使用 FreeIPA 登录”表单。经完整外部路径复查，匿名成员/管理 API 为 401，错误 Origin 登录请求为 403，错误用户名为 invalid_credentials/401，静态页面、livez、readyz 和能力接口正常。此项在随后由用户确认：真实 admins 账号可以登录并看到管理员入口。
 
 ## 9. 权限执行与 kubeconfig 签发发布
 
-2026-10-16 用户确认提交并继续上线。运行镜像源码为 `be9f7e5515261f00edcd4669385f0b974af90175`，GitOps 最终提交为 `e6d33bd6f99240f6304c45f79bdb10acd78d30cf`；镜像 digest 为 `sha256:645a994c8035addf1519ef299777dc5a6075a1bbcb59103b11ac6aa2e1a6fc51`，通过现有 Harbor 代理拉取。完整验证、数据库备份迁移、Cilium 策略修正、剩余人工验收及回退限制统一记录于 [本次发布说明](release-signing.md)。schema v2 不兼容首次发布的旧二进制，不能直接回滚旧镜像。
+2026-10-16 用户确认提交并继续上线。运行镜像源码为 `be9f7e5515261f00edcd4669385f0b974af90175`，GitOps 最终提交为 `e6d33bd6f99240f6304c45f79bdb10acd78d30cf`；镜像 digest 为 `sha256:645a994c8035addf1519ef299777dc5a6075a1bbcb59103b11ac6aa2e1a6fc51`，通过现有 Harbor 代理拉取。完整验证、数据库备份迁移、Cilium 策略修正、人工验收结果及回退限制统一记录于 [本次发布说明](release-signing.md)。schema v2 不兼容首次发布的旧二进制，不能直接回滚旧镜像。

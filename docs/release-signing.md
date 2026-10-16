@@ -1,6 +1,6 @@
 # 权限执行与 kubeconfig 分发：生产发布
 
-状态：2026-10-16（Asia/Shanghai）用户确认提交并继续上线后，已完成源码推送、完整 CI、镜像发布与 Argo 生产更新。服务端验收通过，用户真实账号的首次领取与撤回验收待完成。
+状态：2026-10-16（Asia/Shanghai）用户确认提交并继续上线后，已完成源码推送、完整 CI、镜像发布与 Argo 生产更新。服务端验收通过，用户已明确确认真实账号领取、kubectl 访问与撤回后拒绝均正常。
 
 ## 本次行为变化
 
@@ -34,7 +34,7 @@ CGO_ENABLED=0 go test -c -o /tmp/controller-e2e.test ./internal/controller
 bash scripts/test-cluster.sh /absolute/kind-admin.config /tmp/controller-e2e.test
 ```
 
-测试使用专门只读节点角色，未向真实生产成员签发凭据。kind 的网络插件不能证明生产 Cilium 的 egress/DNAT 行为；生产已通过丢包观察定位并修正策略，实际 API 对账和控制器心跳正常，真实账号签发验收待完成。
+测试使用专门只读节点角色，未向真实生产成员签发凭据。kind 的网络插件不能证明生产 Cilium 的 egress/DNAT 行为；生产已通过丢包观察定位并修正策略，实际 API 对账和控制器心跳正常，真实账号的领取、访问与撤回拒绝已由用户验收通过。
 
 ## Argo 交付差异
 
@@ -66,7 +66,7 @@ v1 → v2 是有事务保护的原地迁移：旧授权保留原到期时间与 
 
 永久授权、1 年证书、退出平台会话三者独立。FreeIPA 禁用账号不会吊销已签发证书，离队时必须显式撤回授权；cluster-admin 持有人自行建立的旁路权限和已有流式连接无法由平台保证连带回收。
 
-本次检查通过：Go race、vet、前端类型检查/构建/格式检查、隔离集群真实下载与 kubectl、准入策略 typeChecking 零警告、候选容器启动/备份/退出、双容器 Pod 与签发能力、真实生产备份副本迁移，以及生产 Argo 清单服务端 dry-run。独立测试集群在检查后清理；生产服务端检查结果见下文，真实账号领取与撤回验收待用户完成。
+本次检查通过：Go race、vet、前端类型检查/构建/格式检查、隔离集群真实下载与 kubectl、准入策略 typeChecking 零警告、候选容器启动/备份/退出、双容器 Pod 与签发能力、真实生产备份副本迁移，以及生产 Argo 清单服务端 dry-run。独立测试集群在检查后清理；生产服务端检查结果见下文，真实账号领取与撤回验收已由用户确认通过。
 
 ## 本次发布记录
 
@@ -80,4 +80,4 @@ v1 → v2 是有事务保护的原地迁移：旧授权保留原到期时间与 
 
 生产网络排障证据：Cilium drop monitor 显示 KubeGrant Pod 到 `kube-apiserver` 身份的 6443 SYN 被 Policy denied；改为实体规则后，无需重启 Pod，控制器恢复 API 对账，下载就绪变为 true。[Cilium CIDR 与集群节点匹配说明](https://docs.cilium.io/en/stable/security/policy/layer3/#selecting-pods-or-nodes-with-cidr-ipblock)。`deploy/k8s-signing` 因此明确针对当前 Cilium 集群；其他 CNI 需要替换这条 API egress 策略并实测。
 
-仍待用户完成真实生产账号的下载、kubectl 访问和撤回拒绝；不将就绪检查等同于这一人工验收。离线应急入口及定时异地备份演练仍需按运维流程保留与执行。
+2026-10-16 用户在真实生产入口完成了管理员测试授权、个人配置领取、kubectl 访问及撤回后原配置拒绝访问，明确回复“领取、访问和撤回后拒绝均正常”。该结论来自用户实际操作，密码和 kubeconfig 未进入聊天。离线应急入口及定时异地备份演练仍需按运维流程保留与执行。

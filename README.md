@@ -14,7 +14,7 @@
 - 简洁的 React + TypeScript 界面，支持浅色、深色和跟随系统。
 - 本地测试、CI、Dockerfile、手动镜像发布流程、Kubernetes 和 systemd 部署模板。
 
-生产已启用权限执行和个人 kubeconfig 下载，入口为 https://kubegrant.clusters.zjusct.io 。当前只接入现有单集群和服务端配置的角色；真实账号的首次领取与撤回验收待用户完成。新环境默认关闭签发，只有显式配置集群、部署控制器并完成对账后才开放下载。私钥只在下载请求内存中保留。
+生产已启用权限执行和个人 kubeconfig 下载，入口为 https://kubegrant.clusters.zjusct.io 。当前只接入现有单集群和服务端配置的角色；用户已确认真实账号领取、kubectl 访问与撤回后拒绝均正常。新环境默认关闭签发，只有显式配置集群、部署控制器并完成对账后才开放下载。私钥只在下载请求内存中保留。
 
 范围与进度见 [开发计划](docs/credential-plan.md)，本次权限差异、迁移、验证和回退步骤见 [发布说明](docs/release-signing.md)。本次发布已获用户提交与上线确认；后续提交继续遵守确认约定。
 
