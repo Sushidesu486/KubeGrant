@@ -1,6 +1,6 @@
-# 权限执行与 kubeconfig 分发：候选发布
+# 权限执行与 kubeconfig 分发：生产发布
 
-状态：2026-10-16 候选版开发、隔离集群与容器验证已完成，等待提交确认，尚未更新生产。用户要求 commit 前确认。源码以最终提交及发布流程输出的镜像 digest 为准，不将工作区候选镜像当作正式镜像。
+状态：2026-10-16（Asia/Shanghai）用户确认提交并继续上线后，已完成源码推送、完整 CI、镜像发布与 Argo 生产更新。服务端验收通过，用户真实账号的首次领取与撤回验收待完成。
 
 ## 本次行为变化
 
@@ -13,9 +13,9 @@
 ## 已核验的环境与数据
 
 - Kubernetes v1.35.0；个人 API 入口为 `https://k8s-api.clusters.zjusct.io:6444`，工作站使用集群公开 CA 验证 TLS 通过。公开 CA 到期为 2036-01-19。
-- API Service 为 `172.27.0.1:443`，当前 EndpointSlice 指向 `172.25.4.11`、`.60`、`.61`、`.66` 的 6443 端口；新增 egress 仅允许这些目标的 443/6443，保持现有 DNS、IPA 和 Envoy 规则。
+- API Service 为 `172.27.0.1:443`，当前 EndpointSlice 指向 `172.25.4.11`、`.60`、`.61`、`.66` 的 6443 端口。生产 Cilium 1.19 的节点身份不匹配普通 CIDR 规则；实际 egress 使用 `CiliumNetworkPolicy` 的 `toEntities: [kube-apiserver]`，仅 TCP 443/6443，保持现有 DNS、IPA 和 Envoy 规则。
 - 用户已确认生产 FreeIPA admins 账号能正常登录，并看到授权管理和审计入口。这是人工登录验收，不把模拟身份测试当作真实 FreeIPA 验收。
-- 生产数据库已从运行中的旧版本执行一致性备份，保存于工作站忽略目录，0600 权限并通过 integrity_check。核验时 schema v1，成员 1，授权 0；因此启用控制器不会导入或自动授予历史成员权限。正式滚动更新前再取一次新备份。
+- 生产数据库已从运行中的旧版本执行一致性备份，保存于工作站忽略目录，0600 权限并通过 integrity_check。核验时 schema v1，成员 1，授权 0；因此启用控制器不会导入或自动授予历史成员权限。正式滚动更新前已再取新备份，迁移后的副本完整性与原成员、会话、审计保留均已验证。
 
 ## 本地与隔离验证
 
@@ -34,7 +34,7 @@ CGO_ENABLED=0 go test -c -o /tmp/controller-e2e.test ./internal/controller
 bash scripts/test-cluster.sh /absolute/kind-admin.config /tmp/controller-e2e.test
 ```
 
-测试使用专门只读节点角色，未向真实生产成员签发凭据。kind 的网络插件不能证明生产 Cilium 的 egress/DNAT 行为；该部分在生产滚动后通过控制器实际连接和签发验收。
+测试使用专门只读节点角色，未向真实生产成员签发凭据。kind 的网络插件不能证明生产 Cilium 的 egress/DNAT 行为；生产已通过丢包观察定位并修正策略，实际 API 对账和控制器心跳正常，真实账号签发验收待完成。
 
 ## Argo 交付差异
 
@@ -44,7 +44,7 @@ bash scripts/test-cluster.sh /absolute/kind-admin.config /tmp/controller-e2e.tes
 2. 单副本 StatefulSet 加入 controller sidecar，共享现有 SQLite/RBD PVC。保留非 root、只读文件系统等限制；只向控制器挂载自动轮换的短期 ServiceAccount token。
 3. 增加公开集群 CA ConfigMap；没有管理员 kubeconfig、CA 私钥或用户密码。
 4. 增加控制器 SA、必要 RBAC、参数化 ValidatingAdmissionPolicy 及其绑定；仅允许配置角色和受管绑定。按 sync wave 先配置参数与准入，再授予控制器权限，最后更新工作负载。
-5. 增加 API 精确目标 egress，HTTPRoute 请求超时调整为 30 秒，覆盖最长 20 秒的签发等待；既有 openng、DNS 和 TLS 入口不变。
+5. 增加仅面向 Cilium kube-apiserver 实体的 API egress，HTTPRoute 请求超时调整为 30 秒，覆盖最长 20 秒的签发等待；既有 openng、DNS 和 TLS 入口不变。
 
 控制器有 CSR 审批和指定角色 bind 能力，属于高权限代理。CEL 约束资源归属、主体绑定、签名器和期限，但不解析 PEM/ASN.1；证书主体/组/扩展的检查仍由控制器执行。不能声称这已消除控制器被攻破后的提权风险。
 
@@ -66,4 +66,18 @@ v1 → v2 是有事务保护的原地迁移：旧授权保留原到期时间与 
 
 永久授权、1 年证书、退出平台会话三者独立。FreeIPA 禁用账号不会吊销已签发证书，离队时必须显式撤回授权；cluster-admin 持有人自行建立的旁路权限和已有流式连接无法由平台保证连带回收。
 
-本次检查通过：Go race、vet、前端类型检查/构建/格式检查、隔离集群真实下载与 kubectl、准入策略 typeChecking 零警告、候选容器启动/备份/退出、双容器 Pod 与签发能力、真实生产备份副本迁移，以及生产 Argo 清单服务端 dry-run。独立测试集群在检查后清理，生产最终验收仍待发布后进行。
+本次检查通过：Go race、vet、前端类型检查/构建/格式检查、隔离集群真实下载与 kubectl、准入策略 typeChecking 零警告、候选容器启动/备份/退出、双容器 Pod 与签发能力、真实生产备份副本迁移，以及生产 Argo 清单服务端 dry-run。独立测试集群在检查后清理；生产服务端检查结果见下文，真实账号领取与撤回验收待用户完成。
+
+## 本次发布记录
+
+- 运行镜像源码：`be9f7e5515261f00edcd4669385f0b974af90175`；[完整发布流程](https://github.com/Sushidesu486/KubeGrant/actions/runs/38877933445) 的常规检查、真实集群测试、容器冒烟测试与镜像推送全部通过。
+- 镜像：`harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant@sha256:645a994c8035addf1519ef299777dc5a6075a1bbcb59103b11ac6aa2e1a6fc51`。m601 验证 Harbor 实际拉取、amd64 和源码标签；生产 m602 也成功拉取。
+- GitOps：`0616fd308e58fe7417574baee498faa14a947f76` 发布双容器与权限，`e6d33bd6f99240f6304c45f79bdb10acd78d30cf` 修正 Cilium API egress。只变更 `production/kubegrant`。
+- 生产 SQLite schema 1 → 2 成功，成员、会话、审计逐行对比保留，未自动创建授权。上线前后的一致性备份位于本机忽略目录、0600 权限，integrity_check 均为 ok。
+- Argo Synced/Healthy，双容器 Ready、零重启；公开接口 `signing.enabled=true`、`features.kubeconfig_download=true`。Web 不挂载 API token，两条准入策略 typeChecking 无警告。
+- 外部 HTTPS 页面、livez、readyz、匿名接口拒绝、错误 Origin 拒绝、未知 API 404 和随机不存在 IPA 用户的 invalid_credentials/401 检查通过；本机验证显式绕过 HTTP 代理。
+- CI 初次暴露准入策略异步生效的测试竞态，已加入有界 dry-run 生效探针；DELETE 的 dryRun 与 UID 条件同置于请求体，并在被允许的探针后检查资源 UID 不变。最终 push CI 与发布内 CI 均通过。
+
+生产网络排障证据：Cilium drop monitor 显示 KubeGrant Pod 到 `kube-apiserver` 身份的 6443 SYN 被 Policy denied；改为实体规则后，无需重启 Pod，控制器恢复 API 对账，下载就绪变为 true。[Cilium CIDR 与集群节点匹配说明](https://docs.cilium.io/en/stable/security/policy/layer3/#selecting-pods-or-nodes-with-cidr-ipblock)。`deploy/k8s-signing` 因此明确针对当前 Cilium 集群；其他 CNI 需要替换这条 API egress 策略并实测。
+
+仍待用户完成真实生产账号的下载、kubectl 访问和撤回拒绝；不将就绪检查等同于这一人工验收。离线应急入口及定时异地备份演练仍需按运维流程保留与执行。

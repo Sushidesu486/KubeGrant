@@ -2,9 +2,9 @@
 
 ## 当前交付范围
 
-已实现 FreeIPA LDAPS 登录、服务端会话、授权记录、管理员成员列表和审计记录的 SQLite 持久化，以及简洁的前端操作界面。FreeIPA 的 `admins` 组映射为平台管理员。**当前生产版本尚未开放 Kubernetes 凭据签发和集群侧收权**；本地候选版已实现这部分，发布前请先阅读 [权限执行候选发布说明](release-signing.md)。线上旧版创建/撤回授权仍只改变平台记录。
+生产已实现 FreeIPA LDAPS 登录、会话、有限期/长期授权、管理员成员列表、审计、个人 kubeconfig 下载，以及独立控制器的集群权限执行和撤回。FreeIPA 的 `admins` 组映射为平台管理员；实际集群权限仍需显式授权。运行版本、权限差异、schema v2 迁移和回退步骤见 [发布说明](release-signing.md)。
 
-2026-10-16 已部署到生产环境供身份与授权管理验收，不能替代当前 kubeconfig 分发和集群运维流程。首次发布记录见文末。
+2026-10-16 已上线签发版本，服务端检查通过；用户真实账号领取与撤回验收待完成。保留现有独立运维入口，首次发布历史及本次签发发布记录见文末。
 
 ## 1. 如何接入 FreeIPA
 
@@ -45,7 +45,7 @@ export KUBEGRANT_PERMISSION_REF=cluster-admin
 
 默认会话有效期 30 分钟，可配置为 1 分钟至 24 小时。管理员组在登录时读取，存入当次会话；**移出 admins 或停用账号不会立即终止已有平台会话**，最长持续到会话到期。需要立即退出所有平台会话时，运维人员可在服务器本地执行 `clear-sessions`。
 
-默认允许创建最长 30 天的有限期授权，可通过 `KUBEGRANT_GRANT_MAX_TTL` 调整；这不是凭据 TTL。凭据签发未实现，平台授权到期也尚未执行 Kubernetes 收权。后续需通过独立的个人认证身份及可撤回的绑定执行授权，不能把普通成员放入绕过授权层的 `system:masters`。
+默认允许创建最长 30 天的有限期授权，可通过 `KUBEGRANT_GRANT_MAX_TTL` 调整；管理员也可显式选择长期授权。普通凭据最长 24 小时，运维策略最长 365 天，均不超过有限授权的到期时间。每条授权使用独立 User 和可撤回的 RBAC 绑定，不包含 `system:masters`。撤回绑定回收其业务权限，证书认证和已有长连接的边界见发布说明；退出会话、IPA 停用均不等同于撤回集群授权。
 
 ## 3. 是否部署到 Kubernetes
 
@@ -59,6 +59,8 @@ export KUBEGRANT_PERMISSION_REF=cluster-admin
 - HTTPRoute 接入现有 Envoy Gateway，采用与 Harbor 相同的不指定 sectionName 的 parentRef，同时接受匹配域名的 HTTP/HTTPS listener。openng 终止外部 TLS 后通过 HTTP 转发 Envoy，仅挂 HTTPS listener 会使这条上游路径返回 404。
 - Namespace 防止 Argo 自动 prune，StatefulSet PVC 保留策略为 Retain。手动删除 PVC 仍可能触发 StorageClass 的 Delete 回收策略，不能视作备份。
 - 网络策略允许网关入口、CoreDNS 和 freeipa namespace 的 TCP 636。需在真实目标 Pod 验证 Cilium/VIP/NAT 下的匹配；目前的 Pod TLS 核验没有套用这份新策略。
+
+生产签发使用 `deploy/k8s-signing/` opt-in overlay：增加独立控制器、显式投射 token、公开集群 CA、必要 RBAC 和准入约束。API egress 使用 Cilium 的 `kube-apiserver` 实体及 TCP 443/6443；该 overlay 要求 Cilium CRD，其他 CNI 需替换策略并实测。Web 不挂载 API token。
 
 新环境部署前需要：构建并推送真实镜像、替换 Kustomize 中的占位 tag、安装 IPA CA ConfigMap、初始化同命名空间的 `harbor-pull` Secret、验证 CSI 支持 RWOP、核对 DNS/HTTPRoute 和网络策略。`deploy/k8s/` 保留镜像占位符作为可复用模板，当前生产配置由 ops 仓库的 `production/kubegrant` 管理。
 
@@ -94,7 +96,7 @@ kubectl -n kubegrant create secret generic harbor-pull \
 3. ops 仓库 `production/kubegrant/` 保存公共 IPA CA 和独立资源清单。发布成功后将 images 配置改为 `digest: sha256:...`，删除 newTag；从实际节点验证带 Harbor 前缀的 digest 可被拉取，再运行该仓库针对变更文件的校验。**不得推送带占位镜像的 Argo 配置。**
 4. 核对生产 ApplicationSet：目前监听 ops 仓库 `production/*`，自动 selfHeal/prune；新增目录一旦进入其目标 revision 就可能上线。按发布范围确认后交付该目录，保留其他工作树修改。
 5. 等待 PVC Bound、Pod Ready、HTTPRoute Accepted/ResolvedRefs，并确认 DNS 与 HTTPS。当前 ExternalDNS 已启用 gateway-httproute source，预期由新路由创建 `kubegrant.clusters.zjusct.io` 的记录，不另行手工维护同一记录。
-6. 使用真实测试账号验收：普通成员看不到管理接口；admins 成员有管理权限；创建/撤回授权和审计一致；退出后旧会话不可用。该阶段只验收平台记录，不宣称集群授权已生效。
+6. 使用真实测试账号验收：普通成员看不到管理接口；admins 成员有管理权限；创建授权后实际生效，下载配置可直接 kubectl；撤回后原配置的新业务请求被拒绝；审计一致且退出后旧平台会话不可用。
 
 出现问题时，优先回退到已验证镜像 digest，并保留 PVC。首次发布尚无旧镜像可回退时，可暂停该应用自动同步并将副本调整为 0，保留数据库和审计；不要删除 Namespace/PVC。涉及数据库格式变更的版本，镜像回退前另行核对兼容性，不能直接让旧程序打开未知版本数据库。
 
@@ -190,7 +192,7 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 
 本地自动测试覆盖受信任/不受信任 LDAPS、错误密码、缺失稳定 ID、锁定账号、管理员组映射、会话哈希/过期/退出、成员隔离、CSRF、管理员操作、限流和一致性备份。真实 IPA 的账号属性 ACI、OTP、账号停用与组移除仍需用测试账号实测。
 
-正式替代旧 kubeconfig 分发之前，还要完成个人凭据签发、按授权回收、到期执行、故障恢复与离线入口演练。当前配置不会获取或分发任何真实 Kubernetes 管理凭据。
+个人凭据签发、按授权回收和到期执行已完成隔离集群验证并上线。正式推广前仍须完成真实生产账号的领取/撤回验收，保留故障恢复与离线入口演练。控制器不读取或挂载 Kubernetes CA 私钥。
 
 ## 8. 首次生产发布与验收记录
 
@@ -204,7 +206,7 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 - 在已部署网络策略下，以随机不存在的用户名做单次登录测试，返回 invalid_credentials/401，验证 LDAP 连接与 TLS 未被策略阻断；不等同于真实账号的属性读取和 admins 组映射验收。
 - 已获取运行中数据库的一致性快照到本机受限目录，并通过 SQLite integrity_check；该快照未进入 Git，尚未配置定时异地备份。
 
-真实账号验收待用户完成：admins 成员能进入授权管理与审计；普通成员不能进入管理接口；创建/撤回授权、审计和退出会话正常。当前只管理授权记录，`kubeconfig_download=false`，不执行集群权限变更。
+首次发布时仅管理授权记录，`kubeconfig_download=false`。用户随后已确认实际 admins 登录及管理员入口正常；新版签发发布结果见下节。
 
 ### 外部入口接入缺口
 
@@ -215,3 +217,7 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 外部回归命令：`bash scripts/check-public-entry.sh`。该检查从可直连校网入口的客户端执行，不携带 NetGATE cookie，也不通过本机 HTTP 代理；必须直接返回 200 和 KubeGrant 页面，302 到网关登录或 404 都会失败。修复前实测 FAIL/302，修复后实测 PASS/200。
 
 修复后 openng 的 4 个实例滚动重载完成，openng 与 kubegrant 两个 Argo Application 均为 Synced/Healthy，revision 为上述修正提交。原 HTTP 上游由 404 变为 200，内部 HTTPS 仍为 200。本机直连和通过现有 HTTP 代理访问外部入口均返回 200；内置浏览器实际加载了用户名、密码和“使用 FreeIPA 登录”表单。经完整外部路径复查，匿名成员/管理 API 为 401，错误 Origin 登录请求为 403，错误用户名为 invalid_credentials/401，静态页面、livez、readyz 和能力接口正常。真实账号登录及管理员映射仍待用户验收。
+
+## 9. 权限执行与 kubeconfig 签发发布
+
+2026-10-16 用户确认提交并继续上线。运行镜像源码为 `be9f7e5515261f00edcd4669385f0b974af90175`，GitOps 最终提交为 `e6d33bd6f99240f6304c45f79bdb10acd78d30cf`；镜像 digest 为 `sha256:645a994c8035addf1519ef299777dc5a6075a1bbcb59103b11ac6aa2e1a6fc51`，通过现有 Harbor 代理拉取。完整验证、数据库备份迁移、Cilium 策略修正、剩余人工验收及回退限制统一记录于 [本次发布说明](release-signing.md)。schema v2 不兼容首次发布的旧二进制，不能直接回滚旧镜像。
