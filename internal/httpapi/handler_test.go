@@ -41,7 +41,7 @@ func TestFoundationDoesNotExposeUnimplementedAccess(t *testing.T) {
 				if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 					t.Fatal(err)
 				}
-				if len(body.Features) != 3 {
+				if len(body.Features) != 4 {
 					t.Fatal("missing feature availability information")
 				}
 				for name, enabled := range body.Features {

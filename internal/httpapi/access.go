@@ -190,6 +190,7 @@ func (a *access) require(admin bool, next authenticatedHandler) http.HandlerFunc
 
 func (a *access) routes(mux *http.ServeMux) {
 	a.credentialRoutes(mux)
+	a.userRoutes(mux)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("GET /api/v1/me", a.require(false, func(w http.ResponseWriter, r *http.Request, s storage.Session) { writeJSON(w, http.StatusOK, s) }))
 	mux.HandleFunc("POST /api/v1/auth/logout", a.require(false, func(w http.ResponseWriter, r *http.Request, s storage.Session) {

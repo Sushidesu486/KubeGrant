@@ -4,6 +4,7 @@ export interface SystemStatus {
   identity_provider: "freeipa";
   signing?: { enabled: boolean };
   features: {
+    user_import?: boolean;
     login: boolean;
     grant_management: boolean;
     kubeconfig_download: boolean;
@@ -65,6 +66,13 @@ export interface Credential {
 }
 
 const messages: Record<string, string> = {
+  invalid_pagination: "分页或搜索条件无效",
+  invalid_import: "请输入当前管理员的 FreeIPA 密码",
+  directory_credentials: "FreeIPA 密码不正确，或账号不可用",
+  directory_administrator_required: "当前 FreeIPA 账号不再属于平台管理员组",
+  directory_identity_changed: "账号身份已变化，请退出后重新登录",
+  directory_not_configured: "目录导入暂未配置",
+  directory_unavailable: "无法完整读取 FreeIPA 用户目录，未导入任何用户",
   grant_inactive: "授权已失效或正在回收，请刷新查看",
   signing_unavailable: "权限尚未生效或签发服务暂不可用，请稍后重试",
   signing_timeout: "签发超时，请重新领取",
@@ -217,3 +225,44 @@ export async function downloadKubeconfig(id: string): Promise<string> {
   }
   return response.headers.get("X-KubeGrant-Credential-Expires-At") ?? "";
 }
+
+export interface UserSummary extends Member {
+  sources: string;
+  last_login: string | null;
+  active_grants: number;
+}
+export interface Page<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+export const listUsers = (
+  query: string,
+  offset: number,
+  signal?: AbortSignal,
+) =>
+  request<Page<UserSummary>>(
+    `/admin/users?${new URLSearchParams({ q: query, offset: String(offset), limit: "20" })}`,
+    "GET",
+    undefined,
+    signal,
+  );
+export const listUserGrants = (
+  id: string,
+  offset: number,
+  signal?: AbortSignal,
+) =>
+  request<Page<Grant>>(
+    `/admin/users/${encodeURIComponent(id)}/grants?offset=${offset}&limit=20`,
+    "GET",
+    undefined,
+    signal,
+  );
+export const importUsers = (password: string) =>
+  request<{
+    created: number;
+    updated: number;
+    unchanged: number;
+    total: number;
+  }>("/admin/users/import", "POST", { password });

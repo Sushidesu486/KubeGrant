@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Sushidesu486/KubeGrant/internal/credential"
+	"github.com/Sushidesu486/KubeGrant/internal/identity"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -43,13 +44,14 @@ func NewHandler(opts Options) (http.Handler, error) {
 		})
 	})
 	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, r *http.Request) {
+		_, directoryEnabled := opts.Authenticator.(identity.UserDirectory)
 		phase := "foundation"
 		if a.configured() {
 			phase = "access_management"
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "kubegrant", "phase": phase, "identity_provider": "freeipa",
-			"features":     map[string]bool{"login": a.configured(), "grant_management": a.canManageGrants(), "kubeconfig_download": a.signingReady(r)},
+			"features":     map[string]bool{"user_import": directoryEnabled, "login": a.configured(), "grant_management": a.canManageGrants(), "kubeconfig_download": a.signingReady(r)},
 			"grant_target": map[string]any{"cluster_id": opts.ClusterID, "permission_ref": opts.PermissionRef, "max_ttl_seconds": int64(opts.GrantMaxTTL.Seconds())},
 			"signing":      map[string]bool{"enabled": opts.SigningEnabled},
 		})

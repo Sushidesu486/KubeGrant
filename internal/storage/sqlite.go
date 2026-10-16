@@ -107,23 +107,10 @@ func (s *Store) StartSession(ctx context.Context, p identity.Profile, now, expir
 		return Session{}, "", err
 	}
 	defer tx.Rollback()
-	var member Member
-	err = tx.QueryRowContext(ctx, `SELECT m.id FROM members m JOIN identities i ON i.member_id=m.id WHERE i.provider=? AND i.issuer=? AND i.subject=?`, p.Provider, p.Issuer, p.Subject).Scan(&member.ID)
-	if errors.Is(err, sql.ErrNoRows) {
-		member.ID = randomID()
-		if _, err = tx.ExecContext(ctx, `INSERT INTO members(id,username,display_name) VALUES(?,?,?)`, member.ID, p.Username, p.DisplayName); err != nil {
-			return Session{}, "", err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO identities(provider,issuer,subject,member_id) VALUES(?,?,?,?)`, p.Provider, p.Issuer, p.Subject, member.ID); err != nil {
-			return Session{}, "", err
-		}
-	} else if err != nil {
+	member, _, err := upsertMember(ctx, tx, p)
+	if err != nil {
 		return Session{}, "", err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE members SET username=?,display_name=? WHERE id=?`, p.Username, p.DisplayName, member.ID); err != nil {
-		return Session{}, "", err
-	}
-	member.Username, member.DisplayName = p.Username, p.DisplayName
 	if _, err = tx.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at<=? OR token_hash=?`, now.UnixNano(), tokenHash(oldToken)); err != nil {
 		return Session{}, "", err
 	}

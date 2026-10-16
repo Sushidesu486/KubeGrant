@@ -366,3 +366,66 @@ tr:last-child td {
     padding: 20px;
   }
 }
+
+.user-toolbar,
+.user-search,
+.row-actions,
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.user-toolbar,
+.pagination {
+  justify-content: space-between;
+}
+.user-toolbar {
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.user-search {
+  flex: 1;
+  max-width: 460px;
+}
+.pagination {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.import-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 20px;
+  padding: 24px;
+  margin-bottom: 24px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.import-form > button {
+  justify-self: end;
+}
+.user-permissions h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+tr[aria-selected="true"] {
+  background: var(--control);
+}
+@media (max-width: 680px) {
+  .tabs {
+    gap: 20px;
+    overflow-x: auto;
+  }
+  .tabs button {
+    white-space: nowrap;
+  }
+  .import-form {
+    grid-template-columns: 1fr;
+    padding: 20px;
+  }
+  .user-permissions .section-heading {
+    flex-wrap: wrap;
+  }
+}

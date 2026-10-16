@@ -18,6 +18,7 @@ import (
 	"time"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
+	"github.com/go-ldap/ldap/v3"
 )
 
 func directoryFixture(t *testing.T, attributes map[string][]string) FreeIPAConfig {
@@ -102,7 +103,17 @@ func directoryFixture(t *testing.T, attributes map[string][]string) FreeIPAConfi
 				}
 				entry.AppendChild(attrs)
 				send(id, entry)
-				send(id, result(5, 0))
+				if search.Children[1].Children[0].Data.String() == "cn=users,cn=accounts,dc=example,dc=com" {
+					packet := ber.NewSequence("")
+					packet.AppendChild(ber.NewInteger(ber.ClassUniversal, ber.TypePrimitive, ber.TagInteger, id, ""))
+					packet.AppendChild(result(5, 0))
+					controls := ber.Encode(ber.ClassContext, ber.TypeConstructed, 0, nil, "")
+					controls.AppendChild(ldap.NewControlPaging(200).Encode())
+					packet.AppendChild(controls)
+					conn.Write(packet.Bytes())
+				} else {
+					send(id, result(5, 0))
+				}
 			}()
 		}
 	}()

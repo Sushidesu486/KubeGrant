@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Users } from "./Users";
 import type { ReactNode } from "react";
 import {
   ApiError,
@@ -22,7 +23,7 @@ import type {
   SystemStatus,
 } from "./api";
 
-type Tab = "mine" | "manage" | "credentials" | "audit";
+type Tab = "mine" | "manage" | "credentials" | "audit" | "users";
 function date(value: string) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
@@ -89,6 +90,9 @@ function duration(seconds: number) {
   return `${seconds / 60} 分钟`;
 }
 const actions: Record<string, string> = {
+  "member.imported": "导入用户",
+  "member.updated": "更新用户资料",
+  "directory.imported": "完成目录导入",
   "session.login": "登录",
   "session.logout": "退出",
   "grant.created": "创建授权",
@@ -128,6 +132,7 @@ export function Console({
   const [policy, setPolicy] = useState<"standard" | "operations">("standard");
   const [success, setSuccess] = useState("");
   const [member, setMember] = useState("");
+  const [selectedUser, setSelectedUser] = useState<Member | null>(null);
   const [expiry, setExpiry] = useState(() =>
     localDate(
       Date.now() + Math.min(86400, status.grant_target.max_ttl_seconds) * 1000,
@@ -144,6 +149,7 @@ export function Console({
     setError("");
     (async () => {
       setSystem(await getSystemStatus(controller.signal));
+      if (tab === "users") return;
       if (tab === "audit") {
         setAudit((await listAudit(controller.signal)).items);
         return;
@@ -237,6 +243,12 @@ export function Console({
           {session.administrator && (
             <>
               <button
+                aria-current={tab === "users" ? "page" : undefined}
+                onClick={() => setTab("users")}
+              >
+                用户
+              </button>
+              <button
                 aria-current={tab === "manage" ? "page" : undefined}
                 onClick={() => setTab("manage")}
               >
@@ -270,13 +282,15 @@ export function Console({
         )}
         <div className="section-heading">
           <h1>
-            {tab === "mine"
-              ? "我的授权"
-              : tab === "manage"
-                ? "授权管理"
-                : tab === "credentials"
-                  ? "凭据"
-                  : "审计"}
+            {tab === "users"
+              ? "用户"
+              : tab === "mine"
+                ? "我的授权"
+                : tab === "manage"
+                  ? "授权管理"
+                  : tab === "credentials"
+                    ? "凭据"
+                    : "审计"}
           </h1>
           <button
             className="secondary-button"
@@ -310,6 +324,12 @@ export function Console({
                 disabled={busy}
               >
                 <option value="">选择成员</option>
+                {selectedUser?.id === member &&
+                  !members.some((item) => item.id === member) && (
+                    <option value={selectedUser.id}>
+                      {selectedUser.username} · {selectedUser.display_name}
+                    </option>
+                  )}
                 {members.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.username}
@@ -370,7 +390,20 @@ export function Console({
             </p>
           </form>
         )}
-        {loading ? (
+        {tab === "users" ? (
+          <Users
+            username={session.member.username}
+            importEnabled={!!system.features.user_import}
+            refresh={refresh}
+            onExpired={onExpired}
+            grantState={grantState}
+            onAssign={(user) => {
+              setSelectedUser(user);
+              setMember(user.id);
+              setTab("manage");
+            }}
+          />
+        ) : loading ? (
           <p className="empty-state">正在加载…</p>
         ) : tab === "audit" ? (
           <div className="table-scroll">

@@ -18,6 +18,8 @@
 
 范围与进度见 [开发计划](docs/credential-plan.md)，本次权限差异、迁移、验证和回退步骤见 [发布说明](docs/release-signing.md)。本次发布已获用户提交与上线确认；后续提交继续遵守确认约定。
 
+当前工作区另已实现用户搜索、个人权限查看及 FreeIPA 批量导入，尚未发布，见 [用户导入说明](docs/user-import.md)。
+
 ## 本地开发
 
 要求 Go 1.27+、Node.js 22.12+、npm。依赖由 `go.sum`、`web/package-lock.json` 固定。

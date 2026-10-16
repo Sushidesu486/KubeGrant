@@ -85,31 +85,13 @@ func (p *FreeIPA) Authenticate(ctx context.Context, username, password string) (
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	var conn *ldap.Conn
-	for _, raw := range p.urls {
-		if ctx.Err() != nil {
-			break
-		}
-		u, _ := url.Parse(raw)
-		deadline, _ := ctx.Deadline()
-		timeout := min(3*time.Second, time.Until(deadline))
-		c, err := ldap.DialURL(raw,
-			ldap.DialWithDialer(&net.Dialer{Timeout: timeout}),
-			ldap.DialWithTLSConfig(&tls.Config{RootCAs: p.roots, ServerName: u.Hostname(), MinVersion: tls.VersionTLS12}),
-		)
-		if err == nil {
-			conn = c
-			break
-		}
-	}
-	if conn == nil {
-		return Profile{}, ErrUnavailable
+	conn, err := p.connect(ctx)
+	if err != nil {
+		return Profile{}, err
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
-	deadline, _ := ctx.Deadline()
-	conn.SetTimeout(time.Until(deadline))
 	dn := "uid=" + ldap.EscapeDN(username) + ",cn=users,cn=accounts," + p.baseDN
 	if err := conn.Bind(dn, password); err != nil {
 		if ldap.IsErrorWithCode(err, ldap.LDAPResultInvalidCredentials) {
@@ -144,4 +126,30 @@ func (p *FreeIPA) Authenticate(ctx context.Context, username, password string) (
 	}
 	return Profile{Provider: "freeipa", Issuer: p.baseDN, Subject: subject, Username: uid,
 		DisplayName: e.GetAttributeValue("cn"), Administrator: admin}, nil
+}
+
+func (p *FreeIPA) connect(ctx context.Context) (*ldap.Conn, error) {
+	var conn *ldap.Conn
+	for _, raw := range p.urls {
+		if ctx.Err() != nil {
+			break
+		}
+		u, _ := url.Parse(raw)
+		deadline, _ := ctx.Deadline()
+		timeout := min(3*time.Second, time.Until(deadline))
+		c, err := ldap.DialURL(raw,
+			ldap.DialWithDialer(&net.Dialer{Timeout: timeout}),
+			ldap.DialWithTLSConfig(&tls.Config{RootCAs: p.roots, ServerName: u.Hostname(), MinVersion: tls.VersionTLS12}),
+		)
+		if err == nil {
+			conn = c
+			break
+		}
+	}
+	if conn == nil {
+		return nil, ErrUnavailable
+	}
+	deadline, _ := ctx.Deadline()
+	conn.SetTimeout(time.Until(deadline))
+	return conn, nil
 }
