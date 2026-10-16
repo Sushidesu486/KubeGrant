@@ -73,13 +73,16 @@ opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.req
 url = endpoint + '/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/kubegrant-e2e-foreign'
 with opener.open(urllib.request.Request(url, headers=headers), timeout=5) as response:
     uid = json.load(response)['metadata']['uid']
-body = json.dumps({'apiVersion': 'v1', 'kind': 'DeleteOptions', 'preconditions': {'uid': uid}}).encode()
+body = json.dumps({'apiVersion': 'v1', 'kind': 'DeleteOptions', 'dryRun': ['All'], 'preconditions': {'uid': uid}}).encode()
 deadline = time.monotonic() + 30
 while True:
     try:
-        request = urllib.request.Request(url + '?dryRun=All', data=body, headers=headers, method='DELETE')
+        request = urllib.request.Request(url, data=body, headers=headers, method='DELETE')
         with opener.open(request, timeout=5) as response:
             response.read()
+        with opener.open(urllib.request.Request(url, headers=headers), timeout=5) as response:
+            if json.load(response)['metadata']['uid'] != uid:
+                raise SystemExit('Admission dry-run modified the foreign binding')
     except urllib.error.HTTPError as error:
         message = error.read().decode()
         if error.code in (403, 422) and 'kubegrant-managed-bindings' in message:
