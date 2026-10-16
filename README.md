@@ -1,6 +1,6 @@
 # KubeGrant
 
-Kubernetes 访问管理平台。管理员分配权限和有效期，成员通过 FreeIPA 登录并领取个人 kubeconfig；GitLab 身份适配留待后续。
+基于 Kubernetes 的内部权限控制平台，向成员分发受管理的个人 kubeconfig。管理员分配角色、范围和有效期，成员通过 FreeIPA 登录领取；GitLab 身份适配留待后续。
 
 ## 当前进度
 
@@ -14,6 +14,8 @@ Kubernetes 访问管理平台。管理员分配权限和有效期，成员通过
 - 本地测试、CI、Dockerfile、手动镜像发布流程、Kubernetes 和 systemd 部署模板。
 
 **尚未实现 kubeconfig 签发和 Kubernetes 侧收权。** 当前授权到期或撤回只改变平台记录，不能使实际 kubeconfig 失效。下载入口不会提前开放。
+
+下一阶段按 [权限执行与凭据开发计划](docs/credential-plan.md) 推进：普通凭据最长 24 小时，固定运维成员可由管理员授予长期授权并领取最长 1 年的证书。`internal/credential` 已提供两种凭据策略、内存密钥、公共 CSR 校验和 kubeconfig 生成核心；长期授权存储、控制器、下载 API 与真实集群收权尚待接入，不代表生产已开放签发。
 
 ## 本地开发
 
