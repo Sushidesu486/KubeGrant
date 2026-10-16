@@ -60,5 +60,35 @@ KUBEGRANT_E2E_API=$(kubectl --kubeconfig "$admin_config" config view --minify -o
 export KUBEGRANT_E2E_CA="$runtime_dir/ca.crt"
 export KUBEGRANT_E2E_TOKEN_FILE="$runtime_dir/token"
 export KUBEGRANT_E2E_CONFIRM=kind-kubegrant-e2e
+# Admission policy watches are asynchronous. Probe actual enforcement without
+# mutating the foreign binding before running assertions or signing anything.
+python3 - <<'PY'
+import ipaddress, json, os, pathlib, ssl, time, urllib.error, urllib.parse, urllib.request
+endpoint = os.environ['KUBEGRANT_E2E_API']
+if not ipaddress.ip_address(urllib.parse.urlsplit(endpoint).hostname).is_loopback:
+    raise SystemExit('Refusing a non-loopback test API')
+context = ssl.create_default_context(cafile=os.environ['KUBEGRANT_E2E_CA'])
+headers = {'Authorization': 'Bearer ' + pathlib.Path(os.environ['KUBEGRANT_E2E_TOKEN_FILE']).read_text().strip(), 'Content-Type': 'application/json'}
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+url = endpoint + '/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/kubegrant-e2e-foreign'
+with opener.open(urllib.request.Request(url, headers=headers), timeout=5) as response:
+    uid = json.load(response)['metadata']['uid']
+body = json.dumps({'apiVersion': 'v1', 'kind': 'DeleteOptions', 'preconditions': {'uid': uid}}).encode()
+deadline = time.monotonic() + 30
+while True:
+    try:
+        request = urllib.request.Request(url + '?dryRun=All', data=body, headers=headers, method='DELETE')
+        with opener.open(request, timeout=5) as response:
+            response.read()
+    except urllib.error.HTTPError as error:
+        message = error.read().decode()
+        if error.code in (403, 422) and 'kubegrant-managed-bindings' in message:
+            print('PASS: admission enforcement observed with a dry-run deletion')
+            break
+        raise SystemExit('Unexpected admission probe response: HTTP ' + str(error.code))
+    if time.monotonic() >= deadline:
+        raise SystemExit('Admission did not enforce the binding policy within 30 seconds')
+    time.sleep(0.2)
+PY
 "$test_binary" -test.run '^TestRealClusterSigningRevocationAndAdmission$' -test.v
 kubectl --kubeconfig "$admin_config" get validatingadmissionpolicies kubegrant-managed-bindings kubegrant-managed-csrs -o jsonpath='{range .items[*]}{.metadata.name}{" warnings="}{.status.typeChecking.expressionWarnings}{"\n"}{end}'
