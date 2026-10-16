@@ -1,6 +1,6 @@
 # FreeIPA 用户导入与权限管理
 
-2026-10-16：工作区实现，尚未提交或发布。提交前按用户约定确认。
+2026-10-16（Asia/Shanghai）：用户确认提交并上线后，已完成 CI、镜像发布和 Argo 更新；真实目录导入待管理员在网页验证密码执行。
 
 ## 实际目录核验
 
@@ -31,4 +31,15 @@ API：管理员 `GET /api/v1/admin/users?q=&limit=20&offset=0`、`GET /api/v1/ad
 
 已验证：稳定身份、重复导入、重命名与同名重建、无隐式授权/会话、过期或重置会话、超过 500 人分页、搜索字面值、权限隔离；LDAPS 管理员完整读取、普通成员/错误密码/失去管理员资格/CSRF/部分目录读取失败拒绝。前端用本地 67 个模拟用户验证批量导入、分页、搜索、个人权限及预选授权对象，并检查深浅主题。
 
-`make test check build`（含 Go race、vet、前端类型检查和构建）、前端格式检查通过。最终发布仍须经确认、CI、镜像发布和 Argo 更新；上线后管理员在网页验证密码并执行真实目录导入，核对当前目录人数、已有成员身份及授权保留，再检查重复导入和未登录成员的授权流程。密码与 kubeconfig 不进入聊天。
+`make test check build`（含 Go race、vet、前端类型检查和构建）、前端格式检查通过。发布已完成。上线后管理员在网页验证密码并执行真实目录导入，核对当前目录人数、已有成员身份及授权保留，再检查重复导入和未登录成员的授权流程。密码与 kubeconfig 不进入聊天。
+
+## 生产发布记录
+
+- 镜像源码：`13dd837a2467a6dded87186311507654da20298c`；[发布流程](https://github.com/Sushidesu486/KubeGrant/actions/runs/38885753327) 的常规检查、真实 Kubernetes 签发/撤回集成测试、容器冒烟测试和推送均通过。独立 push CI 同样通过。
+- 生产镜像：`harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant@sha256:1ad309c9f2d80bb4465853da51b33e002594edc57a77d8a52e371f0018b5a440`；Harbor 实际拉取、amd64 架构与源码标签均验证通过。
+- GitOps：`670ffeff240f8535788e962ac410eb70c8382e5d`，仅更新 `production/kubegrant` 的 digest 与版本注解；Argo Synced/Healthy，Web/controller 2/2 Ready、零重启。
+- 上线前后获取一致性备份，0600 权限并通过 integrity_check。schema 仍为 v2，members、identities、sessions、grants、credential_requests、audit_events 逐行对比相同；未在发布时自动导入用户或分配权限。
+- 外部 HTTPS、新前端静态资源、livez/readyz、user_import=true、kubeconfig_download=true、新增用户/导入接口匿名拒绝、Origin 拒绝与 LDAPS 错误用户拒绝检查通过。
+- 发布前再做只读规则核验：67 个目录用户、67 个唯一稳定 ID、0 个导入规则不符合项。实际导入应以操作时完整读取的结果为准。
+
+本次保持 schema v2，可以回退至上一个已验证的 schema v2 签发镜像并保留新增身份与原授权；旧版只是不再提供新用户管理入口。不要回退到只支持 schema v1 的首次发布二进制。
