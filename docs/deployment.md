@@ -4,7 +4,7 @@
 
 已实现 FreeIPA LDAPS 登录、服务端会话、授权记录、管理员成员列表和审计记录的 SQLite 持久化，以及简洁的前端操作界面。FreeIPA 的 `admins` 组映射为平台管理员。**尚未实现 Kubernetes 凭据签发和集群侧收权**；创建/撤回授权目前只改变平台记录，界面会明确提示。
 
-因此现在可以部署为身份与授权管理的联调环境，不能替代当前 kubeconfig 分发和集群运维流程。
+2026-10-16 已部署到生产环境供身份与授权管理验收，不能替代当前 kubeconfig 分发和集群运维流程。首次发布记录见文末。
 
 ## 1. 如何接入 FreeIPA
 
@@ -60,7 +60,7 @@ export KUBEGRANT_PERMISSION_REF=cluster-admin
 - Namespace 防止 Argo 自动 prune，StatefulSet PVC 保留策略为 Retain。手动删除 PVC 仍可能触发 StorageClass 的 Delete 回收策略，不能视作备份。
 - 网络策略允许网关入口、CoreDNS 和 freeipa namespace 的 TCP 636。需在真实目标 Pod 验证 Cilium/VIP/NAT 下的匹配；目前的 Pod TLS 核验没有套用这份新策略。
 
-部署前需要：构建并推送真实镜像、替换 Kustomize 中的占位 tag、安装 IPA CA ConfigMap、初始化同命名空间的 `harbor-pull` Secret、验证 CSI 支持 RWOP、核对 DNS/HTTPRoute 和网络策略。当前应用工作负载尚未部署到生产集群。
+新环境部署前需要：构建并推送真实镜像、替换 Kustomize 中的占位 tag、安装 IPA CA ConfigMap、初始化同命名空间的 `harbor-pull` Secret、验证 CSI 支持 RWOP、核对 DNS/HTTPRoute 和网络策略。`deploy/k8s/` 保留镜像占位符作为可复用模板，当前生产配置由 ops 仓库的 `production/kubegrant` 管理。
 
 ### 镜像发布与 GitOps 交付
 
@@ -91,14 +91,14 @@ kubectl -n kubegrant create secret generic harbor-pull \
 
 1. 获得确认后提交并推送 KubeGrant 的发布准备变更，运行 `Publish image`，保留源码 SHA、工作流链接和摘要中的 registry digest。
 2. 核实 GHCR 包可通过现有 Harbor GHCR 代理缓存读取。公开源码仓库不代表新建 GHCR 包自动公开；当前采用公开镜像路线，应将该包设为公开并验证匿名读取。生产镜像引用为 `harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant@sha256:...`；发布流程仍推送 GHCR，没有直接推送 Harbor，也没有 Harbor 推送凭据。若改为私有镜像，需另外设计 Harbor 上游认证或普通项目直推及节点拉取凭据，不能仅给 Pod 添加 GHCR 凭据就视为已接通代理缓存。
-3. 本地 `argo/production/kubegrant/` 已准备公共 IPA CA 和独立资源清单，镜像仍为 `pending-first-release`。发布成功后将 images 配置改为 `digest: sha256:...`，删除 newTag；从实际节点验证带 Harbor 前缀的 digest 可被拉取，再运行该仓库针对变更文件的校验。**不得推送带占位镜像的 Argo 配置。**
+3. ops 仓库 `production/kubegrant/` 保存公共 IPA CA 和独立资源清单。发布成功后将 images 配置改为 `digest: sha256:...`，删除 newTag；从实际节点验证带 Harbor 前缀的 digest 可被拉取，再运行该仓库针对变更文件的校验。**不得推送带占位镜像的 Argo 配置。**
 4. 核对生产 ApplicationSet：目前监听 ops 仓库 `production/*`，自动 selfHeal/prune；新增目录一旦进入其目标 revision 就可能上线。按发布范围确认后交付该目录，保留其他工作树修改。
 5. 等待 PVC Bound、Pod Ready、HTTPRoute Accepted/ResolvedRefs，并确认 DNS 与 HTTPS。当前 ExternalDNS 已启用 gateway-httproute source，预期由新路由创建 `kubegrant.clusters.zjusct.io` 的记录，不另行手工维护同一记录。
 6. 使用真实测试账号验收：普通成员看不到管理接口；admins 成员有管理权限；创建/撤回授权和审计一致；退出后旧会话不可用。该阶段只验收平台记录，不宣称集群授权已生效。
 
 出现问题时，优先回退到已验证镜像 digest，并保留 PVC。首次发布尚无旧镜像可回退时，可暂停该应用自动同步并将副本调整为 0，保留数据库和审计；不要删除 Namespace/PVC。涉及数据库格式变更的版本，镜像回退前另行核对兼容性，不能直接让旧程序打开未知版本数据库。
 
-2026-10-16（Asia/Shanghai）准备核验：m601 上已从提交 `392bd82` 成功构建容器；现有 Gateway 的通配 HTTPS listener 和证书可用于规划域名，绕过 DNS 指定 172.28.0.1 访问时证书校验通过、返回 404（平台路由尚未发布）。集群 RBD CSI 为 cephcsi v3.16.0，仍需用本应用实际 PVC 的 Bound/挂载结果完成 RWOP 验收。尚未同步生产应用工作负载，也未修改主机运维入口。
+2026-10-16（Asia/Shanghai）的发布前核验：m601 上从提交 `392bd82` 成功构建容器；Gateway 通配 HTTPS listener 和证书校验通过。当时平台路由尚未发布，返回 404。后续正式发布结果见文末，不以此准备阶段的观察代替线上现状。
 
 在已入域的管理机上生成公共 CA 配置清单：
 
@@ -191,3 +191,17 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 本地自动测试覆盖受信任/不受信任 LDAPS、错误密码、缺失稳定 ID、锁定账号、管理员组映射、会话哈希/过期/退出、成员隔离、CSRF、管理员操作、限流和一致性备份。真实 IPA 的账号属性 ACI、OTP、账号停用与组移除仍需用测试账号实测。
 
 正式替代旧 kubeconfig 分发之前，还要完成个人凭据签发、按授权回收、到期执行、故障恢复与离线入口演练。当前配置不会获取或分发任何真实 Kubernetes 管理凭据。
+
+## 8. 首次生产发布与验收记录
+
+2026-10-16（Asia/Shanghai）通过 GitOps 发布，入口为 <https://kubegrant.clusters.zjusct.io>。外部浏览器先经过现有 NetGATE 登录；完成入口验证后再登录 KubeGrant。集群内 DNS 解析为 Envoy Gateway 的 172.28.0.1。
+
+- 应用源码：`274ab330d7fee67e823c91687029b41a21658ded`。[镜像发布工作流](https://github.com/Sushidesu486/KubeGrant/actions/runs/38840929690) 的完整检查、容器验证和发布均通过。
+- ops 发布提交：`aaf0779910b942b55c6a1d747055ec74fc5cb52b`，仅新增 `production/kubegrant`。从线上仓库建立隔离发布目录，未推送其他工作树中未发布的改动。
+- 生产镜像：`harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant@sha256:f8abef658937ae51f4a2b61d06e152bfd127e389ff3b5ba77d4728b33d3030b9`。专用 pull Secret 的实际拉取通过，镜像源码标签与上述版本一致。
+- Argo Application 为 Synced/Healthy；`kubegrant-0` 在 `m602.clusters.zjusct.io` 运行，1/1 Ready、0 次重启。`data-kubegrant-0` 为 2Gi ceph-block/RWOP，状态 Bound；HTTPRoute 的 Accepted/ResolvedRefs 均为 True。
+- 从 m601 经正式域名和 HTTPS 验证 livez、readyz、静态页面和能力接口；匿名成员/管理接口均为 401，错误 Origin 的登录请求为 403，未知 API 为 404。
+- 在已部署网络策略下，以随机不存在的用户名做单次登录测试，返回 invalid_credentials/401，验证 LDAP 连接与 TLS 未被策略阻断；不等同于真实账号的属性读取和 admins 组映射验收。
+- 已获取运行中数据库的一致性快照到本机受限目录，并通过 SQLite integrity_check；该快照未进入 Git，尚未配置定时异地备份。
+
+真实账号验收待用户完成：admins 成员能进入授权管理与审计；普通成员不能进入管理接口；创建/撤回授权、审计和退出会话正常。当前只管理授权记录，`kubeconfig_download=false`，不执行集群权限变更。
