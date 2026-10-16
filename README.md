@@ -87,7 +87,7 @@ KUBEGRANT_STATIC_DIR=web/dist ./bin/kubegrant
 - 日常平台可以部署在 k8s；本地主机 SSH、离线应急 kubeconfig 和 BMC 必须独立保留。
 - 不给当前阶段的平台挂载集群管理 kubeconfig 或 CA 私钥，也不向其授予 cluster-admin。
 
-生产验收入口：[kubegrant.clusters.zjusct.io](https://kubegrant.clusters.zjusct.io)。2026-10-16 已通过 Argo CD 发布登录、授权记录与审计版本；外部访问先经过现有 NetGATE 验证。真实账号的管理员映射与操作验收待完成，kubeconfig 签发仍未接通。版本及检查结果见 [部署记录](docs/deployment.md#8-首次生产发布与验收记录)。
+生产验收入口：[kubegrant.clusters.zjusct.io](https://kubegrant.clusters.zjusct.io)。2026-10-16 已通过 Argo CD 部署登录、授权记录与审计版本；外部 openng 接入已修复，并通过外部检查与浏览器登录页验证。真实账号的管理员映射与操作验收待完成，kubeconfig 签发仍未接通。版本及检查结果见 [部署记录](docs/deployment.md#8-首次生产发布与验收记录)。
 
 ## 结构
 

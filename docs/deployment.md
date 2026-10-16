@@ -56,7 +56,7 @@ export KUBEGRANT_PERMISSION_REF=cluster-admin
 - 1 个 StatefulSet 副本，SQLite 使用独立 `ceph-block` RBD PVC，申请 ReadWriteOncePod；不在 CephFS/NFS 上让多个实例并发打开数据库。
 - 首发镜像为 Linux amd64，显式设置 nodeSelector，避免在现有 ARM/RISC-V 节点上启动不兼容镜像。后续增加多架构构建时再调整调度范围。
 - 非 root、只读根文件系统、禁提权；不自动挂载 ServiceAccount token，没有集群管理 RBAC，没有 Kubernetes CA 私钥。
-- 接入现有 Envoy Gateway 的 `https-wildcard-clusters-zjusct-io` listener；平台域名规划为 `kubegrant.clusters.zjusct.io`，需核实 DNS 和证书覆盖。
+- HTTPRoute 接入现有 Envoy Gateway，采用与 Harbor 相同的不指定 sectionName 的 parentRef，同时接受匹配域名的 HTTP/HTTPS listener。openng 终止外部 TLS 后通过 HTTP 转发 Envoy，仅挂 HTTPS listener 会使这条上游路径返回 404。
 - Namespace 防止 Argo 自动 prune，StatefulSet PVC 保留策略为 Retain。手动删除 PVC 仍可能触发 StorageClass 的 Delete 回收策略，不能视作备份。
 - 网络策略允许网关入口、CoreDNS 和 freeipa namespace 的 TCP 636。需在真实目标 Pod 验证 Cilium/VIP/NAT 下的匹配；目前的 Pod TLS 核验没有套用这份新策略。
 
@@ -194,7 +194,7 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 
 ## 8. 首次生产发布与验收记录
 
-2026-10-16（Asia/Shanghai）通过 GitOps 发布，入口为 <https://kubegrant.clusters.zjusct.io>。外部浏览器先经过现有 NetGATE 登录；完成入口验证后再登录 KubeGrant。集群内 DNS 解析为 Envoy Gateway 的 172.28.0.1。
+2026-10-16（Asia/Shanghai）通过 GitOps 发布，入口为 <https://kubegrant.clusters.zjusct.io>。集群内 DNS 解析为 Envoy Gateway 的 172.28.0.1。首次发布只完成内部 HTTPS 检查，外部入口存在接入遗漏；随后已修复并完成外部入口检查，具体记录见下文。
 
 - 应用源码：`274ab330d7fee67e823c91687029b41a21658ded`。[镜像发布工作流](https://github.com/Sushidesu486/KubeGrant/actions/runs/38840929690) 的完整检查、容器验证和发布均通过。
 - ops 发布提交：`aaf0779910b942b55c6a1d747055ec74fc5cb52b`，仅新增 `production/kubegrant`。从线上仓库建立隔离发布目录，未推送其他工作树中未发布的改动。
@@ -205,3 +205,13 @@ systemd 模板只监听 127.0.0.1:8080，使用本地 StateDirectory。不要同
 - 已获取运行中数据库的一致性快照到本机受限目录，并通过 SQLite integrity_check；该快照未进入 Git，尚未配置定时异地备份。
 
 真实账号验收待用户完成：admins 成员能进入授权管理与审计；普通成员不能进入管理接口；创建/撤回授权、审计和退出会话正常。当前只管理授权记录，`kubeconfig_download=false`，不执行集群权限变更。
+
+### 外部入口接入缺口
+
+用户报告外部站点无法加载后核查，实际链路为：客户端 HTTPS → openng TLS 终止和域名策略 → Envoy HTTP listener → KubeGrant Service。openng 已有通配转发到 `http://envoy-proxy.envoy-gateway.svc.cluster.local`，无需另加专用 backend。
+
+修复前存在两处可复现的缺口：域名未加入 `production/openng/resources/secret.yaml` 中 policyd 的 Public Hosts，未登录客户端被 302 到 NetGATE；HTTPRoute 限定 HTTPS listener，openng 所用 HTTP 上游返回 404。经用户确认，按现有 Harbor 模式，仅将 KubeGrant 域名纳入 Public Hosts，由应用自己的 FreeIPA 登录和接口授权保护功能；移除该 HTTPRoute 的 sectionName 限定，保留内部 HTTPS 访问能力。ops 修正提交为 `90cca9f138b2981c3fd4e71678f5f263809f858d`，只改动上述两处。
+
+外部回归命令：`bash scripts/check-public-entry.sh`。该检查从可直连校网入口的客户端执行，不携带 NetGATE cookie，也不通过本机 HTTP 代理；必须直接返回 200 和 KubeGrant 页面，302 到网关登录或 404 都会失败。修复前实测 FAIL/302，修复后实测 PASS/200。
+
+修复后 openng 的 4 个实例滚动重载完成，openng 与 kubegrant 两个 Argo Application 均为 Synced/Healthy，revision 为上述修正提交。原 HTTP 上游由 404 变为 200，内部 HTTPS 仍为 200。本机直连和通过现有 HTTP 代理访问外部入口均返回 200；内置浏览器实际加载了用户名、密码和“使用 FreeIPA 登录”表单。经完整外部路径复查，匿名成员/管理 API 为 401，错误 Origin 登录请求为 403，错误用户名为 invalid_credentials/401，静态页面、livez、readyz 和能力接口正常。真实账号登录及管理员映射仍待用户验收。

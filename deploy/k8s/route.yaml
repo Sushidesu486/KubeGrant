@@ -6,7 +6,6 @@ spec:
   parentRefs:
     - name: envoy-gateway
       namespace: envoy-gateway
-      sectionName: https-wildcard-clusters-zjusct-io
   hostnames:
     - kubegrant.clusters.zjusct.io
   rules:
