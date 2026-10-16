@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kubegrant
+spec:
+  template:
+    spec:
+      serviceAccountName: kubegrant-controller
+      containers:
+        - name: kubegrant
+          volumeMounts:
+            - name: cluster-ca
+              mountPath: /etc/kubegrant/cluster
+              readOnly: true
+        - name: controller
+          image: kubegrant:dev
+          args: [controller]
+          envFrom:
+            - configMapRef:
+                name: kubegrant-config
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 192Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: cluster-ca
+              mountPath: /etc/kubegrant/cluster
+              readOnly: true
+            - name: kubernetes-api
+              mountPath: /var/run/kubegrant/api
+              readOnly: true
+      volumes:
+        - name: cluster-ca
+          configMap:
+            name: kubegrant-cluster-ca
+        - name: kubernetes-api
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 1200
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt

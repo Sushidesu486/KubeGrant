@@ -60,3 +60,26 @@ func TestInvalidGrantCannotBeActive(t *testing.T) {
 		})
 	}
 }
+
+func TestPermanentGrantRequiresExplicitConsistentIntent(t *testing.T) {
+	now := time.Now().UTC()
+	g := Grant{ID: "g", MemberID: "m", ClusterID: "c", PermissionRef: "p", CreatedAt: now, Permanent: true, CredentialPolicy: "operations"}
+	if err := g.Validate(); err != nil || !g.ActiveAt(now.Add(10*365*24*time.Hour)) {
+		t.Fatal("permanent grant was not active", err)
+	}
+	g.Permanent = false
+	if g.Validate() == nil {
+		t.Fatal("omitted expiry implicitly created permanent access")
+	}
+	g.Permanent = true
+	g.ExpiresAt = now.Add(time.Hour)
+	if g.Validate() == nil {
+		t.Fatal("ambiguous lifetime accepted")
+	}
+	g.ExpiresAt = time.Time{}
+	revoked := now.Add(time.Hour)
+	g.RevokedAt = &revoked
+	if g.ActiveAt(revoked) {
+		t.Fatal("permanent grant ignored explicit revocation")
+	}
+}

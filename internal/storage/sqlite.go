@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -33,7 +34,8 @@ type Session struct {
 
 type GrantRecord struct {
 	grant.Grant
-	Username string `json:"username"`
+	Username  string    `json:"username"`
+	Execution Execution `json:"execution"`
 }
 
 type AuditEvent struct {
@@ -68,26 +70,14 @@ func Open(path string) (*Store, error) {
 	if err := f.Close(); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	query := url.Values{"_txlock": {"immediate"}, "_pragma": {"foreign_keys(1)", "busy_timeout(5000)"}}
+	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: query.Encode()}).String()
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	var version int
-	if err = db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil || version > 1 {
-		db.Close()
-		return nil, errors.New("unsupported or unreadable database schema version")
-	}
-	_, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; BEGIN;
-CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, username TEXT NOT NULL, display_name TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS identities (provider TEXT NOT NULL, issuer TEXT NOT NULL, subject TEXT NOT NULL, member_id TEXT NOT NULL REFERENCES members(id), PRIMARY KEY(provider,issuer,subject));
-CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), administrator INTEGER NOT NULL, expires_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
-CREATE TABLE IF NOT EXISTS grants (id TEXT PRIMARY KEY, member_id TEXT NOT NULL REFERENCES members(id), cluster_id TEXT NOT NULL, permission_ref TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER);
-CREATE INDEX IF NOT EXISTS grants_member ON grants(member_id,created_at);
-CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, actor_id TEXT NOT NULL, action TEXT NOT NULL, target_id TEXT NOT NULL);
-PRAGMA user_version=1; COMMIT;`)
-	if err != nil {
+	if err = migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
@@ -196,61 +186,6 @@ func (s *Store) Members(ctx context.Context) ([]Member, error) {
 	return result, rows.Err()
 }
 
-func (s *Store) CreateGrant(ctx context.Context, actor, member, cluster, permission string, now, expires time.Time) (grant.Grant, error) {
-	g := grant.Grant{ID: randomID(), MemberID: member, ClusterID: cluster, PermissionRef: permission, CreatedAt: now, ExpiresAt: expires}
-	if err := g.Validate(); err != nil {
-		return grant.Grant{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return grant.Grant{}, err
-	}
-	defer tx.Rollback()
-	var exists int
-	if err = tx.QueryRowContext(ctx, `SELECT 1 FROM members WHERE id=?`, member).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-		return grant.Grant{}, ErrNotFound
-	} else if err != nil {
-		return grant.Grant{}, err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO grants(id,member_id,cluster_id,permission_ref,created_at,expires_at) VALUES(?,?,?,?,?,?)`, g.ID, member, cluster, permission, now.UnixNano(), expires.UnixNano()); err != nil {
-		return grant.Grant{}, err
-	}
-	if err = audit(ctx, tx, now, actor, "grant.created", g.ID); err != nil {
-		return grant.Grant{}, err
-	}
-	return g, tx.Commit()
-}
-
-func (s *Store) Grants(ctx context.Context, member string) ([]GrantRecord, error) {
-	query := `SELECT g.id,g.member_id,g.cluster_id,g.permission_ref,g.created_at,g.expires_at,g.revoked_at,m.username FROM grants g JOIN members m ON m.id=g.member_id`
-	args := []any{}
-	if member != "" {
-		query += ` WHERE g.member_id=?`
-		args = append(args, member)
-	}
-	rows, err := s.db.QueryContext(ctx, query+` ORDER BY g.created_at DESC,g.id LIMIT 500`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	result := []GrantRecord{}
-	for rows.Next() {
-		var g GrantRecord
-		var created, expires int64
-		var revoked sql.NullInt64
-		if err := rows.Scan(&g.ID, &g.MemberID, &g.ClusterID, &g.PermissionRef, &created, &expires, &revoked, &g.Username); err != nil {
-			return nil, err
-		}
-		g.CreatedAt, g.ExpiresAt = time.Unix(0, created).UTC(), time.Unix(0, expires).UTC()
-		if revoked.Valid {
-			at := time.Unix(0, revoked.Int64).UTC()
-			g.RevokedAt = &at
-		}
-		result = append(result, g)
-	}
-	return result, rows.Err()
-}
-
 func (s *Store) RevokeGrant(ctx context.Context, actor, id string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -267,6 +202,12 @@ func (s *Store) RevokeGrant(ctx context.Context, actor, id string, now time.Time
 		return nil
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE grants SET revoked_at=? WHERE id=?`, now.UnixNano(), id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO grant_execution(grant_id,state,checked_at,error_code,binding_uid) VALUES(?,'revoking',0,'','') ON CONFLICT(grant_id) DO UPDATE SET state='revoking',checked_at=0,error_code=''`, id); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE credential_requests SET state='abandoned',error_code='grant_inactive' WHERE grant_id=? AND state='pending'`, id); err != nil {
 		return err
 	}
 	if err = audit(ctx, tx, now, actor, "grant.revoked", id); err != nil {

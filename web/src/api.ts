@@ -2,6 +2,7 @@ export interface SystemStatus {
   service: "kubegrant";
   phase: "foundation" | "access_management";
   identity_provider: "freeipa";
+  signing?: { enabled: boolean };
   features: {
     login: boolean;
     grant_management: boolean;
@@ -30,7 +31,14 @@ export interface Grant {
   cluster_id: string;
   permission_ref: string;
   created_at: string;
-  expires_at: string;
+  expires_at: string | null;
+  permanent: boolean;
+  credential_policy: "standard" | "operations";
+  execution: {
+    state: "pending" | "applied" | "revoking" | "revoked" | "expired" | "error";
+    checked_at: string | null;
+    error_code?: string;
+  };
   revoked_at?: string;
 }
 export interface AuditEvent {
@@ -43,7 +51,27 @@ export interface AuditEvent {
   target_label: string;
 }
 
+export interface Credential {
+  id: string;
+  grant_id: string;
+  member_id: string;
+  username: string;
+  credential_policy: "standard" | "operations";
+  public_key_sha256: string;
+  created_at: string;
+  expires_at: string | null;
+  state: string;
+  error_code?: string;
+}
+
 const messages: Record<string, string> = {
+  grant_inactive: "授权已失效或正在回收，请刷新查看",
+  signing_unavailable: "权限尚未生效或签发服务暂不可用，请稍后重试",
+  signing_timeout: "签发超时，请重新领取",
+  signing_failed: "签发未完成，请刷新授权状态后重试",
+  insufficient_lifetime: "授权剩余时间不足以签发证书，请联系管理员",
+  authorization_changed: "登录或授权状态已变化，请刷新后重试",
+  invalid_download: "下载请求无效",
   invalid_credentials: "用户名或密码不正确，或账号不可用",
   identity_unavailable: "暂时无法连接 FreeIPA",
   authentication_not_configured: "登录暂未开放",
@@ -135,10 +163,57 @@ export const listMembers = (signal?: AbortSignal) =>
   request<{ items: Member[] }>("/admin/members", "GET", undefined, signal);
 export const listAudit = (signal?: AbortSignal) =>
   request<{ items: AuditEvent[] }>("/admin/audit", "GET", undefined, signal);
-export const createGrant = (memberID: string, expiresAt: string) =>
+export const createGrant = (
+  memberID: string,
+  expiresAt: string | null,
+  policy: "standard" | "operations" = "standard",
+  permanent = false,
+) =>
   request<Grant>("/admin/grants", "POST", {
     member_id: memberID,
     expires_at: expiresAt,
+    permanent,
+    credential_policy: policy,
   });
 export const revokeGrant = (id: string) =>
   request<void>(`/admin/grants/${encodeURIComponent(id)}/revoke`, "POST");
+
+export const listCredentials = (admin: boolean, signal?: AbortSignal) =>
+  request<{ items: Credential[] }>(
+    admin ? "/admin/credentials" : "/credentials",
+    "GET",
+    undefined,
+    signal,
+  );
+
+export async function downloadKubeconfig(id: string): Promise<string> {
+  const response = await fetch(
+    `/api/v1/grants/${encodeURIComponent(id)}/kubeconfig`,
+    {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: AbortSignal.timeout(25000),
+    },
+  );
+  if (!response.ok) {
+    const value = await response.json().catch(() => ({}));
+    throw new ApiError(
+      response.status,
+      typeof value.error === "string" ? value.error : "unknown",
+    );
+  }
+  const url = URL.createObjectURL(await response.blob());
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "kubegrant.config";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  } finally {
+    // Give the browser time to begin reading the attachment before revoking it.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return response.headers.get("X-KubeGrant-Credential-Expires-At") ?? "";
+}

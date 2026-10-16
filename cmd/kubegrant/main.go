@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/Sushidesu486/KubeGrant/internal/config"
+	"github.com/Sushidesu486/KubeGrant/internal/controller"
+	"github.com/Sushidesu486/KubeGrant/internal/credential"
 	"github.com/Sushidesu486/KubeGrant/internal/httpapi"
 	"github.com/Sushidesu486/KubeGrant/internal/identity"
+	"github.com/Sushidesu486/KubeGrant/internal/kube"
 	"github.com/Sushidesu486/KubeGrant/internal/storage"
 )
 
@@ -22,6 +25,12 @@ func main() {
 		logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 		var err error
 		switch os.Args[1] {
+		case "controller":
+			if len(os.Args) != 2 {
+				err = errors.New("controller takes no arguments")
+			} else {
+				err = runController(logger)
+			}
 		case "backup":
 			err = backup(os.Args[2:])
 		case "clear-sessions":
@@ -63,9 +72,17 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 	}
+	var clusterCA []byte
+	if cfg.SigningEnabled {
+		clusterCA, err = os.ReadFile(cfg.ClusterCAFile)
+		if err != nil {
+			return errors.New("cannot read public cluster CA")
+		}
+	}
 	handler, err := httpapi.NewHandler(httpapi.Options{StaticDir: cfg.StaticDir, PublicURL: cfg.PublicURL,
 		SecureCookies: cfg.SecureCookies, Authenticator: authenticator, Store: store, SessionTTL: cfg.SessionTTL,
-		GrantMaxTTL: cfg.GrantMaxTTL, ClusterID: cfg.ClusterID, PermissionRef: cfg.PermissionRef})
+		GrantMaxTTL: cfg.GrantMaxTTL, ClusterID: cfg.ClusterID, PermissionRef: cfg.PermissionRef,
+		SigningEnabled: cfg.SigningEnabled, ClusterEndpoint: cfg.ClusterEndpoint, ClusterCA: clusterCA})
 	if err != nil {
 		return err
 	}
@@ -97,4 +114,35 @@ func run(logger *slog.Logger) error {
 		logger.Info("shutdown complete")
 		return nil
 	}
+}
+
+func runController(logger *slog.Logger) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if !cfg.SigningEnabled {
+		return errors.New("controller requires explicitly enabled signing")
+	}
+	ca, err := os.ReadFile(cfg.ClusterCAFile)
+	if err != nil {
+		return errors.New("cannot read public cluster CA")
+	}
+	if err = credential.ValidateTrustBundle(ca, time.Now().UTC()); err != nil {
+		return err
+	}
+	api, err := kube.New(cfg.KubernetesAPI, cfg.KubernetesCAFile, cfg.KubernetesTokenFile)
+	if err != nil {
+		return err
+	}
+	store, err := storage.Open(cfg.DatabasePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	c := controller.Controller{Store: store, API: api, ClusterID: cfg.ClusterID, PermissionRef: cfg.PermissionRef, CA: ca}
+	logger.Info("starting authorization controller", "cluster", cfg.ClusterID)
+	return c.Run(ctx, logger)
 }

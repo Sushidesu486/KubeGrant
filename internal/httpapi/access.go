@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sushidesu486/KubeGrant/internal/credential"
 	"github.com/Sushidesu486/KubeGrant/internal/identity"
 	"github.com/Sushidesu486/KubeGrant/internal/storage"
 )
@@ -22,6 +23,9 @@ type Options struct {
 	SessionTTL, GrantMaxTTL  time.Duration
 	ClusterID, PermissionRef string
 	Now                      func() time.Time
+	SigningEnabled           bool
+	ClusterEndpoint          string
+	ClusterCA                []byte
 }
 
 type attemptCounter struct {
@@ -29,10 +33,11 @@ type attemptCounter struct {
 	count int
 }
 type access struct {
-	opts     Options
-	mu       sync.Mutex
-	attempts map[string]attemptCounter
-	inflight chan struct{}
+	opts      Options
+	mu        sync.Mutex
+	attempts  map[string]attemptCounter
+	inflight  chan struct{}
+	downloads chan struct{}
 }
 
 func (a *access) configured() bool { return a.opts.Authenticator != nil && a.opts.Store != nil }
@@ -184,6 +189,7 @@ func (a *access) require(admin bool, next authenticatedHandler) http.HandlerFunc
 }
 
 func (a *access) routes(mux *http.ServeMux) {
+	a.credentialRoutes(mux)
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("GET /api/v1/me", a.require(false, func(w http.ResponseWriter, r *http.Request, s storage.Session) { writeJSON(w, http.StatusOK, s) }))
 	mux.HandleFunc("POST /api/v1/auth/logout", a.require(false, func(w http.ResponseWriter, r *http.Request, s storage.Session) {
@@ -253,16 +259,21 @@ func (a *access) createGrant(w http.ResponseWriter, r *http.Request, s storage.S
 	var input struct {
 		MemberID  string    `json:"member_id"`
 		ExpiresAt time.Time `json:"expires_at"`
+		Permanent bool      `json:"permanent"`
+		Policy    string    `json:"credential_policy"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
 	now := a.opts.Now()
-	if input.MemberID == "" || !input.ExpiresAt.After(now) || input.ExpiresAt.After(now.Add(a.opts.GrantMaxTTL)) {
+	if input.Policy == "" {
+		input.Policy = string(credential.Standard)
+	}
+	if input.MemberID == "" || (input.Policy != string(credential.Standard) && input.Policy != string(credential.Operations)) || (input.Permanent && !input.ExpiresAt.IsZero()) || (!input.Permanent && (!input.ExpiresAt.After(now) || input.ExpiresAt.After(now.Add(a.opts.GrantMaxTTL)))) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant"})
 		return
 	}
-	g, err := a.opts.Store.CreateGrant(r.Context(), s.Member.ID, input.MemberID, a.opts.ClusterID, a.opts.PermissionRef, now, input.ExpiresAt)
+	g, err := a.opts.Store.CreateGrantWithPolicy(r.Context(), s.Member.ID, storage.NewGrant{MemberID: input.MemberID, ClusterID: a.opts.ClusterID, PermissionRef: a.opts.PermissionRef, Policy: input.Policy, Permanent: input.Permanent, ExpiresAt: input.ExpiresAt}, now)
 	if errors.Is(err, storage.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "member_not_found"})
 		return

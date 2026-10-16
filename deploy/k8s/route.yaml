@@ -9,6 +9,9 @@ spec:
   hostnames:
     - kubegrant.clusters.zjusct.io
   rules:
-    - backendRefs:
+    - timeouts:
+        request: 30s
+        backendRequest: 25s
+      backendRefs:
         - name: kubegrant
           port: 80

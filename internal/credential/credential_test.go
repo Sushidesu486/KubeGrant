@@ -176,6 +176,21 @@ func TestPersonalKubeconfigAndPublicPersistence(t *testing.T) {
 	}
 }
 
+func TestSigningTrustBundleValidation(t *testing.T) {
+	ca := newTestCA(t)
+	if err := ValidateTrustBundle(ca.pem, testNow); err != nil {
+		t.Fatal(err)
+	}
+	for _, data := range [][]byte{nil, []byte("invalid"), append(bytes.Clone(ca.pem), []byte("-----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----")...)} {
+		if err := ValidateTrustBundle(data, testNow); err == nil {
+			t.Fatal("invalid signing trust bundle accepted")
+		}
+	}
+	if err := ValidateTrustBundle(ca.pem, ca.cert.NotAfter); err == nil {
+		t.Fatal("expired signing CA accepted")
+	}
+}
+
 func TestAuthorizationAndLifetimeBoundaries(t *testing.T) {
 	g := testGrant()
 	for _, tc := range []struct {
@@ -301,6 +316,7 @@ func TestRejectTamperedPublicRequests(t *testing.T) {
 func TestOperationsPolicySupportsOneYearWithoutChangingPermissions(t *testing.T) {
 	g, ca := testGrant(), newTestCA(t)
 	g.ExpiresAt = testNow.Add(400 * 24 * time.Hour)
+	g.CredentialPolicy = "operations"
 	p, err := Operations.New(g, g.MemberID, testNow)
 	if err != nil {
 		t.Fatal(err)
@@ -360,6 +376,7 @@ func TestOperationsPolicySupportsOneYearWithoutChangingPermissions(t *testing.T)
 
 func TestOperationsPolicyStillHonorsGrantExpiry(t *testing.T) {
 	g := testGrant() // 30 day grant, despite requesting the one year policy.
+	g.CredentialPolicy = "operations"
 	p, err := Operations.New(g, g.MemberID, testNow)
 	if err != nil || !p.PublicRequest().NotAfter.Equal(g.ExpiresAt) {
 		t.Fatal("operations certificate must never outlive its finite grant", err)
@@ -374,6 +391,27 @@ func TestOperationsPolicyStillHonorsGrantExpiry(t *testing.T) {
 		if _, err := policy.ExpirationSeconds(p.PublicRequest(), testNow); err == nil {
 			t.Fatal("unknown policy supplied signing TTL", policy)
 		}
+	}
+}
+
+func TestPermanentGrantAndPolicyCannotBeSelectedByMember(t *testing.T) {
+	g := testGrant()
+	if _, err := Operations.New(g, g.MemberID, testNow); !errors.Is(err, ErrAuthorization) {
+		t.Fatal("member selected operations without assigned policy")
+	}
+	g.Permanent = true
+	g.ExpiresAt = time.Time{}
+	g.CredentialPolicy = "operations"
+	p, err := Operations.New(g, g.MemberID, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.PublicRequest().NotAfter.Equal(testNow.Add(365 * 24 * time.Hour)) {
+		t.Fatal("permanent grant produced an unbounded certificate")
+	}
+	g.CredentialPolicy = "standard"
+	if _, err := Operations.ValidateRequest(p.PublicRequest(), g, testNow); err == nil {
+		t.Fatal("downgraded grant accepted old operations signing request")
 	}
 }
 

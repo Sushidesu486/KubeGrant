@@ -93,11 +93,11 @@ func (policy Policy) New(g grant.Grant, member string, now time.Time) (*Pending,
 	if err != nil {
 		return nil, err
 	}
-	if member == "" || member != g.MemberID || !g.ActiveAt(now) {
+	if member == "" || member != g.MemberID || !g.ActiveAt(now) || string(policy) != g.Policy() {
 		return nil, ErrAuthorization
 	}
 	deadline := now.Add(lifetime)
-	if g.ExpiresAt.Before(deadline) {
+	if !g.Permanent && g.ExpiresAt.Before(deadline) {
 		deadline = g.ExpiresAt
 	}
 	deadline = deadline.UTC().Truncate(time.Second)
@@ -140,12 +140,12 @@ func (policy Policy) ValidateRequest(r Request, g grant.Grant, now time.Time) (*
 	if err != nil || r.Policy != policy {
 		return nil, ErrRequest
 	}
-	if !g.ActiveAt(now) || r.GrantID != g.ID || r.MemberID != g.MemberID ||
+	if !g.ActiveAt(now) || string(policy) != g.Policy() || r.GrantID != g.ID || r.MemberID != g.MemberID ||
 		r.ClusterID != g.ClusterID || r.PermissionRef != g.PermissionRef {
 		return nil, ErrAuthorization
 	}
 	if r.ID == "" || r.Subject != Subject(g) || r.CreatedAt.Before(g.CreatedAt) ||
-		r.CreatedAt.After(now) || !r.NotAfter.After(now) || r.NotAfter.After(g.ExpiresAt) ||
+		r.CreatedAt.After(now) || !r.NotAfter.After(now) || (!g.Permanent && r.NotAfter.After(g.ExpiresAt)) ||
 		r.NotAfter.After(r.CreatedAt.Add(lifetime)) || r.NotAfter.Sub(r.CreatedAt) < MinimumTTL {
 		return nil, ErrRequest
 	}
@@ -184,6 +184,20 @@ func (policy Policy) ExpirationSeconds(r Request, now time.Time) (int32, error) 
 type Download struct {
 	Data      []byte    `json:"-"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// Verify is the controller's public-only verification path. The trust bundle
+// and policy come from deployment configuration and the persisted grant.
+func (policy Policy) Verify(r Request, g grant.Grant, certificate, ca []byte, now time.Time) (time.Time, error) {
+	csr, err := policy.ValidateRequest(r, g, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	leaf, err := validateCertificate(r, csr, certificate, ca, now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return leaf.NotAfter.UTC(), nil
 }
 
 // Kubeconfig only prepares the attachment after checking the current grant and
@@ -234,6 +248,22 @@ func (p *Pending) Kubeconfig(g grant.Grant, member, endpoint string, certificate
 
 func validSubject(name pkix.Name, subject string) bool {
 	return name.CommonName == subject && len(name.Names) == 1 && name.Names[0].Type.Equal([]int{2, 5, 4, 3})
+}
+
+// ValidateTrustBundle rejects missing, expired, non-CA and mixed private/public
+// PEM files before an enabled service starts accepting signing requests.
+func ValidateTrustBundle(data []byte, now time.Time) error {
+	blocks, err := decodePEM(data, "CERTIFICATE")
+	if err != nil || len(blocks) == 0 {
+		return errors.New("invalid public cluster CA bundle")
+	}
+	for _, block := range blocks {
+		ca, err := x509.ParseCertificate(block)
+		if err != nil || !ca.IsCA || now.Before(ca.NotBefore) || !now.Before(ca.NotAfter) {
+			return errors.New("invalid or expired public cluster CA")
+		}
+	}
+	return nil
 }
 
 func decodePEM(data []byte, kind string) ([][]byte, error) {

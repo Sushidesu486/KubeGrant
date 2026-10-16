@@ -4,18 +4,19 @@
 
 ## 当前进度
 
-已实现：
+候选版已实现：
 
 - FreeIPA LDAPS 登录，以 `ipaUniqueID` 关联稳定身份，`admins` 组映射为平台管理员。
 - 服务端会话、退出与到期失效；密码不保存，数据库只保存会话 token 哈希。
-- 成员查看个人授权；管理员创建/撤回授权、查看已登录成员与审计记录。
+- 成员查看个人授权；管理员创建有限期/长期授权，选择 24 小时或 1 年凭据策略，查看成员与审计。
+- 独立控制器执行 RBAC 绑定、Kubernetes CSR 签发、撤回与到期回收；成员下载个人 kubeconfig，查看凭据记录与到期提示。
 - SQLite 持久化、一致性备份及运维会话重置命令。
 - 简洁的 React + TypeScript 界面，支持浅色、深色和跟随系统。
 - 本地测试、CI、Dockerfile、手动镜像发布流程、Kubernetes 和 systemd 部署模板。
 
-**尚未实现 kubeconfig 签发和 Kubernetes 侧收权。** 当前授权到期或撤回只改变平台记录，不能使实际 kubeconfig 失效。下载入口不会提前开放。
+当前生产仍运行身份与授权记录版本；上述签发与执行功能是待发布候选版。默认关闭签发，只有显式配置集群、部署控制器并完成对账后才开放下载。私钥只在下载请求内存中保留。
 
-下一阶段按 [权限执行与凭据开发计划](docs/credential-plan.md) 推进：普通凭据最长 24 小时，固定运维成员可由管理员授予长期授权并领取最长 1 年的证书。`internal/credential` 已提供两种凭据策略、内存密钥、公共 CSR 校验和 kubeconfig 生成核心；长期授权存储、控制器、下载 API 与真实集群收权尚待接入，不代表生产已开放签发。
+范围与进度见 [开发计划](docs/credential-plan.md)，本次权限差异、迁移、验证和回退步骤见 [候选发布说明](docs/release-signing.md)。源码提交前仍须确认。
 
 ## 本地开发
 
@@ -85,11 +86,12 @@ KUBEGRANT_STATIC_DIR=web/dist ./bin/kubegrant
 详见 [FreeIPA 接入、部署与应急运维](docs/deployment.md)。
 
 - `deploy/k8s/`：面向现有 Envoy Gateway/ceph-block 的单实例模板；首版仅调度至 Linux amd64 节点，需替换镜像、添加 IPA CA 并验收后交付。
-- `deploy/systemd/`：独立管理机运行模板。
+- `deploy/k8s-signing/`：显式启用签发的 overlay，包含 controller、受约束 RBAC、准入策略和 API egress；需要补充公开集群 CA。
+- `deploy/systemd/`：独立管理机 Web 模板；启用签发还需独立运行 controller。
 - 日常平台可以部署在 k8s；本地主机 SSH、离线应急 kubeconfig 和 BMC 必须独立保留。
 - 不给当前阶段的平台挂载集群管理 kubeconfig 或 CA 私钥，也不向其授予 cluster-admin。
 
-生产验收入口：[kubegrant.clusters.zjusct.io](https://kubegrant.clusters.zjusct.io)。2026-10-16 已通过 Argo CD 部署登录、授权记录与审计版本；外部 openng 接入已修复，并通过外部检查与浏览器登录页验证。真实账号的管理员映射与操作验收待完成，kubeconfig 签发仍未接通。版本及检查结果见 [部署记录](docs/deployment.md#8-首次生产发布与验收记录)。
+生产验收入口：[kubegrant.clusters.zjusct.io](https://kubegrant.clusters.zjusct.io)。2026-10-16 已通过 Argo CD 部署登录、授权记录与审计版本；外部 openng 接入已修复，并通过外部检查与浏览器登录页验证。用户已确认真实 admins 账号登录与管理员入口正常；生产 kubeconfig 签发仍未开放。版本及检查结果见 [部署记录](docs/deployment.md#8-首次生产发布与验收记录)。
 
 ## 结构
 

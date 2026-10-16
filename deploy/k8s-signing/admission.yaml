@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubegrant-signing-policy
+data:
+  instance: ca9ac6a27a2bd19f2214652b
+  role: cluster-admin
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubegrant-managed-bindings
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [rbac.authorization.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [clusterrolebindings]
+  matchConditions:
+    - name: controller-only
+      expression: request.userInfo.username == 'system:serviceaccount:kubegrant:kubegrant-controller'
+  variables:
+    - name: resource
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+  validations:
+    - expression: >-
+        variables.resource.metadata.name.matches('^kg-[a-f0-9]{48}$') &&
+        has(variables.resource.metadata.labels) &&
+        variables.resource.metadata.labels['app.kubernetes.io/managed-by'] == 'kubegrant' &&
+        variables.resource.metadata.labels['kubegrant.io/instance'] == params.data.instance &&
+        'kubegrant.io/grant' in variables.resource.metadata.labels
+      message: Controller may only manage its own grant bindings.
+    - expression: >-
+        variables.resource.roleRef.apiGroup == 'rbac.authorization.k8s.io' &&
+        variables.resource.roleRef.kind == 'ClusterRole' &&
+        variables.resource.roleRef.name == params.data.role &&
+        size(variables.resource.subjects) == 1 &&
+        variables.resource.subjects[0].kind == 'User' &&
+        variables.resource.subjects[0].apiGroup == 'rbac.authorization.k8s.io' &&
+        (!has(variables.resource.subjects[0].namespace) || variables.resource.subjects[0].namespace == '') &&
+        variables.resource.subjects[0].name == 'kubegrant:' + variables.resource.metadata.name.substring(3)
+      message: Only the configured role and the binding's unique grant identity are allowed.
+    - expression: >-
+        request.operation != 'UPDATE' ||
+        (has(oldObject.metadata.labels) &&
+        oldObject.metadata.labels['app.kubernetes.io/managed-by'] == 'kubegrant' &&
+        oldObject.metadata.labels['kubegrant.io/instance'] == params.data.instance)
+      message: Controller cannot adopt an unmanaged existing binding.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubegrant-managed-bindings
+spec:
+  policyName: kubegrant-managed-bindings
+  validationActions: [Deny]
+  paramRef:
+    name: kubegrant-signing-policy
+    namespace: kubegrant
+    parameterNotFoundAction: Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubegrant-managed-csrs
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [certificates.k8s.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [certificatesigningrequests, certificatesigningrequests/approval]
+  matchConditions:
+    - name: controller-only
+      expression: request.userInfo.username == 'system:serviceaccount:kubegrant:kubegrant-controller'
+  variables:
+    - name: resource
+      expression: "request.operation == 'DELETE' ? oldObject : object"
+  validations:
+    - expression: >-
+        variables.resource.metadata.name.matches('^kg-[a-f0-9]{48}$') &&
+        has(variables.resource.metadata.labels) &&
+        variables.resource.metadata.labels['app.kubernetes.io/managed-by'] == 'kubegrant' &&
+        variables.resource.metadata.labels['kubegrant.io/instance'] == params.data.instance &&
+        'kubegrant.io/grant' in variables.resource.metadata.labels &&
+        'kubegrant.io/request' in variables.resource.metadata.labels &&
+        variables.resource.spec.username == request.userInfo.username
+      message: Controller may only manage its own signing requests.
+    - expression: >-
+        variables.resource.spec.signerName == 'kubernetes.io/kube-apiserver-client' &&
+        has(variables.resource.spec.expirationSeconds) &&
+        variables.resource.spec.expirationSeconds >= 600 &&
+        variables.resource.spec.expirationSeconds <= 31536000 &&
+        size(variables.resource.spec.usages) == 2 &&
+        variables.resource.spec.usages.all(u, u in ['digital signature', 'client auth'])
+      message: Only bounded Kubernetes client certificates are allowed.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubegrant-managed-csrs
+spec:
+  policyName: kubegrant-managed-csrs
+  validationActions: [Deny]
+  paramRef:
+    name: kubegrant-signing-policy
+    namespace: kubegrant
+    parameterNotFoundAction: Deny

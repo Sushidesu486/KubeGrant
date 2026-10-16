@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/Sushidesu486/KubeGrant/internal/credential"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,7 +20,15 @@ func NewHandler(opts Options) (http.Handler, error) {
 	if opts.GrantMaxTTL == 0 {
 		opts.GrantMaxTTL = 30 * 24 * time.Hour
 	}
-	a := &access{opts: opts, attempts: map[string]attemptCounter{}, inflight: make(chan struct{}, 4)}
+	if opts.SigningEnabled && (len(opts.ClusterCA) == 0 || opts.ClusterEndpoint == "" || opts.ClusterID == "" || opts.PermissionRef == "") {
+		return nil, fmt.Errorf("signing configuration incomplete")
+	}
+	if opts.SigningEnabled {
+		if err := credential.ValidateTrustBundle(opts.ClusterCA, opts.Now()); err != nil {
+			return nil, err
+		}
+	}
+	a := &access{opts: opts, attempts: map[string]attemptCounter{}, inflight: make(chan struct{}, 4), downloads: make(chan struct{}, 4)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -40,8 +49,9 @@ func NewHandler(opts Options) (http.Handler, error) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"service": "kubegrant", "phase": phase, "identity_provider": "freeipa",
-			"features":     map[string]bool{"login": a.configured(), "grant_management": a.canManageGrants(), "kubeconfig_download": false},
+			"features":     map[string]bool{"login": a.configured(), "grant_management": a.canManageGrants(), "kubeconfig_download": a.signingReady(r)},
 			"grant_target": map[string]any{"cluster_id": opts.ClusterID, "permission_ref": opts.PermissionRef, "max_ttl_seconds": int64(opts.GrantMaxTTL.Seconds())},
+			"signing":      map[string]bool{"enabled": opts.SigningEnabled},
 		})
 	})
 	a.routes(mux)

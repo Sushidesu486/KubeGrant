@@ -26,3 +26,37 @@ jobs:
       - run: test -z "$(gofmt -l cmd internal)"
       - run: make test check build
       - run: npm --prefix web run format:check
+
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install verified kind and kubectl
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64 -o "$RUNNER_TEMP/kind"
+          printf '%s  %s\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$RUNNER_TEMP/kind" | sha256sum --check
+          chmod 700 "$RUNNER_TEMP/kind"
+          curl -fsSL --retry 3 https://dl.k8s.io/release/v1.35.0/bin/linux/amd64/kubectl -o "$RUNNER_TEMP/kubectl"
+          printf '%s  %s\n' a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989 "$RUNNER_TEMP/kubectl" | sha256sum --check
+          chmod 700 "$RUNNER_TEMP/kubectl"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Verify real Kubernetes signing and revocation
+        run: |
+          set -euo pipefail
+          umask 077
+          kind create cluster --name kubegrant-e2e \
+            --image kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f \
+            --kubeconfig "$RUNNER_TEMP/kind-admin.config" --wait 120s
+          CGO_ENABLED=0 go test -c -o "$RUNNER_TEMP/controller-e2e.test" ./internal/controller
+          bash scripts/test-cluster.sh "$RUNNER_TEMP/kind-admin.config" "$RUNNER_TEMP/controller-e2e.test"
+      - name: Remove disposable cluster
+        if: always()
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kind-admin.config
+        run: kind delete cluster --name kubegrant-e2e
