@@ -9,5 +9,5 @@ resources:
   - networkpolicy.yaml
 images:
   - name: kubegrant
-    newName: ghcr.io/sushidesu486/kubegrant
+    newName: harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant
     newTag: replace-with-built-tag

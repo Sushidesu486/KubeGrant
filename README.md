@@ -11,7 +11,7 @@ Kubernetes 访问管理平台。管理员分配权限和有效期，成员通过
 - 成员查看个人授权；管理员创建/撤回授权、查看已登录成员与审计记录。
 - SQLite 持久化、一致性备份及运维会话重置命令。
 - 简洁的 React + TypeScript 界面，支持浅色、深色和跟随系统。
-- 本地测试、CI、Dockerfile、Kubernetes 和 systemd 部署模板。
+- 本地测试、CI、Dockerfile、手动镜像发布流程、Kubernetes 和 systemd 部署模板。
 
 **尚未实现 kubeconfig 签发和 Kubernetes 侧收权。** 当前授权到期或撤回只改变平台记录，不能使实际 kubeconfig 失效。下载入口不会提前开放。
 
@@ -47,6 +47,17 @@ make test check build
 npm --prefix web run format:check
 ```
 
+容器构建与验证（需要 Docker、curl、Python 3）：
+
+```sh
+docker build --platform linux/amd64 --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" -t kubegrant:local .
+bash scripts/smoke-container.sh kubegrant:local
+```
+
+GitHub Actions 的 `Publish image` 手动执行；完整测试和容器验证通过后，发布带完整源码 SHA 的 GHCR 镜像，并在运行摘要输出不可变 digest。不会自动部署到集群。
+
+生产节点按 ops 仓库约定通过现有 Harbor GHCR 代理缓存拉取：`harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant@sha256:...`。Pod 引用同命名空间的 `harbor-pull` imagePullSecret，使用专用只读 robot 账号；凭据独立初始化，不提交 Git。当前没有直接向 Harbor 推送镜像的流程或写入凭据配置。
+
 单进程运行构建后的前后端：
 
 ```sh
@@ -71,7 +82,7 @@ KUBEGRANT_STATIC_DIR=web/dist ./bin/kubegrant
 
 详见 [FreeIPA 接入、部署与应急运维](docs/deployment.md)。
 
-- `deploy/k8s/`：面向现有 Envoy Gateway/ceph-block 的单实例模板；需替换镜像、添加 IPA CA 并验收后交付。
+- `deploy/k8s/`：面向现有 Envoy Gateway/ceph-block 的单实例模板；首版仅调度至 Linux amd64 节点，需替换镜像、添加 IPA CA 并验收后交付。
 - `deploy/systemd/`：独立管理机运行模板。
 - 日常平台可以部署在 k8s；本地主机 SSH、离线应急 kubeconfig 和 BMC 必须独立保留。
 - 不给当前阶段的平台挂载集群管理 kubeconfig 或 CA 私钥，也不向其授予 cluster-admin。

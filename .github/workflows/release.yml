@@ -1,0 +1,49 @@
+name: Publish image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build and test Linux amd64 image
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${SOURCE_REVISION}"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          docker build --platform linux/amd64 \
+            --build-arg "SOURCE_REVISION=$SOURCE_REVISION" -t "$image" .
+          bash scripts/smoke-container.sh "$image"
+      - name: Publish to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE"
+          pinned=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}')
+          if [[ ! "$pinned" =~ ^ghcr.io/sushidesu486/kubegrant@sha256:[a-f0-9]{64}$ ]]; then
+            echo "Missing registry digest" >&2
+            exit 1
+          fi
+          printf 'Image: `%s`\n\nPinned image: `%s`\n\nArchitecture: `linux/amd64`\n' \
+            "$IMAGE" "$pinned" >> "$GITHUB_STEP_SUMMARY"

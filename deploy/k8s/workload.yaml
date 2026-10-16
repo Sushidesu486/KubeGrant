@@ -47,8 +47,13 @@ spec:
       labels:
         app.kubernetes.io/name: kubegrant
     spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
       serviceAccountName: kubegrant
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: harbor-pull
       terminationGracePeriodSeconds: 20
       securityContext:
         runAsNonRoot: true

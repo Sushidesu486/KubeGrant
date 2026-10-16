@@ -54,12 +54,51 @@ export KUBEGRANT_PERMISSION_REF=cluster-admin
 `deploy/k8s/` 提供面向当前环境的 Kustomize 模板：
 
 - 1 个 StatefulSet 副本，SQLite 使用独立 `ceph-block` RBD PVC，申请 ReadWriteOncePod；不在 CephFS/NFS 上让多个实例并发打开数据库。
+- 首发镜像为 Linux amd64，显式设置 nodeSelector，避免在现有 ARM/RISC-V 节点上启动不兼容镜像。后续增加多架构构建时再调整调度范围。
 - 非 root、只读根文件系统、禁提权；不自动挂载 ServiceAccount token，没有集群管理 RBAC，没有 Kubernetes CA 私钥。
 - 接入现有 Envoy Gateway 的 `https-wildcard-clusters-zjusct-io` listener；平台域名规划为 `kubegrant.clusters.zjusct.io`，需核实 DNS 和证书覆盖。
 - Namespace 防止 Argo 自动 prune，StatefulSet PVC 保留策略为 Retain。手动删除 PVC 仍可能触发 StorageClass 的 Delete 回收策略，不能视作备份。
 - 网络策略允许网关入口、CoreDNS 和 freeipa namespace 的 TCP 636。需在真实目标 Pod 验证 Cilium/VIP/NAT 下的匹配；目前的 Pod TLS 核验没有套用这份新策略。
 
-部署前需要：构建并推送真实镜像、替换 Kustomize 中的占位 tag、安装 IPA CA ConfigMap、验证 CSI 支持 RWOP、核对 DNS/HTTPRoute 和网络策略。当前模板尚未部署到生产集群。
+部署前需要：构建并推送真实镜像、替换 Kustomize 中的占位 tag、安装 IPA CA ConfigMap、初始化同命名空间的 `harbor-pull` Secret、验证 CSI 支持 RWOP、核对 DNS/HTTPRoute 和网络策略。当前应用工作负载尚未部署到生产集群。
+
+### 镜像发布与 GitOps 交付
+
+`.github/workflows/release.yml` 仅通过 `workflow_dispatch` 手动发布。流程先复用完整 CI，再构建并运行 Linux amd64 容器；以非 root、只读根目录验证静态页面、健康状态、一致性备份和正常退出，通过后才推送 `ghcr.io/sushidesu486/kubegrant:sha-<完整源码 SHA>`。Dockerfile 的基础镜像也固定到 digest。发布流程使用 GitHub 临时 `GITHUB_TOKEN` 的 packages:write 权限，无需配置长期仓库推送密码。
+
+镜像认证、默认可见性和 digest 用法参考 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。
+
+### Harbor 拉取凭据
+
+StatefulSet 的 Pod 显式引用 `imagePullSecrets: [{name: harbor-pull}]`。该 Secret 必须位于 `kubegrant` 命名空间，类型为 `kubernetes.io/dockerconfigjson`，注册表键为 `harbor.clusters.zjusct.io`。使用 KubeGrant 专用的项目 robot，仅授予 `ghcr.io` 项目内的 `repository:pull`；不授予 push、删除或管理权限。当前 Harbor 项目级 robot 的权限覆盖该代理缓存项目，并非仅覆盖单个 kubegrant 镜像仓库。
+
+Secret 中 `data` 的 base64 是可逆编码，不是加密。凭据不写入应用仓库或 ops Git 仓库，也不作为 Pod 环境变量或卷交给应用进程；由 kubelet 用于镜像拉取。生产应限制 Secret 读取和该命名空间的工作负载创建权限。参见 [Kubernetes 拉取私有镜像](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/) 和 [Secret 说明](https://kubernetes.io/docs/concepts/configuration/secret/)。
+
+恢复或轮换时，在受控管理机从 Harbor 获取专用 robot 凭据，用隔离的 Docker 配置文件生成 Secret；`config.json` 必须直接包含该 registry 的 auth，不应只包含本机 credential helper 引用：
+
+```sh
+kubectl -n kubegrant create secret generic harbor-pull \
+  --type=kubernetes.io/dockerconfigjson \
+  --from-file=.dockerconfigjson=/secure/kubegrant-harbor/config.json \
+  --dry-run=client -o yaml | kubectl apply --server-side --field-manager=kubegrant-credentials -f -
+```
+
+该命令经 stdin 传递 Secret，避免把 token 放进命令行或 Git；不要额外输出渲染结果。Secret 由凭据初始化流程管理，Argo 仅管理其引用。重建命名空间后须先恢复该 Secret；镜像已缓存时 Pod 启动成功不能证明新凭据有效，发布验收仍需验证 registry 认证和实际镜像拉取。Harbor 上游访问 GHCR 的凭据与 kubelet 访问 Harbor 的凭据分开处理。
+
+2026-10-16（Asia/Shanghai）已初始化 `kubegrant` Namespace 和 `harbor-pull` Secret，使用 `robot$ghcr.io+kubegrant-pull`。已通过 Harbor 实际签发的 registry token 验证该账号具有 pull 权限、没有 push 权限；未发布镜像，因此尚未完成 KubeGrant 镜像的实际拉取。此 robot 有效期 90 天，至 **2027-01-14 10:25:09 +08:00**；到期前需轮换。账号 ID 与到期时间记在 Secret 的 `kubegrant.io/harbor-robot-id`、`kubegrant.io/credential-expires-at` 注解中，token 本身不进入 Git。本次未创建 StatefulSet、PVC 或应用入口。
+
+### 发布步骤
+
+1. 获得确认后提交并推送 KubeGrant 的发布准备变更，运行 `Publish image`，保留源码 SHA、工作流链接和摘要中的 registry digest。
+2. 核实 GHCR 包可通过现有 Harbor GHCR 代理缓存读取。公开源码仓库不代表新建 GHCR 包自动公开；当前采用公开镜像路线，应将该包设为公开并验证匿名读取。生产镜像引用为 `harbor.clusters.zjusct.io/ghcr.io/sushidesu486/kubegrant@sha256:...`；发布流程仍推送 GHCR，没有直接推送 Harbor，也没有 Harbor 推送凭据。若改为私有镜像，需另外设计 Harbor 上游认证或普通项目直推及节点拉取凭据，不能仅给 Pod 添加 GHCR 凭据就视为已接通代理缓存。
+3. 本地 `argo/production/kubegrant/` 已准备公共 IPA CA 和独立资源清单，镜像仍为 `pending-first-release`。发布成功后将 images 配置改为 `digest: sha256:...`，删除 newTag；从实际节点验证带 Harbor 前缀的 digest 可被拉取，再运行该仓库针对变更文件的校验。**不得推送带占位镜像的 Argo 配置。**
+4. 核对生产 ApplicationSet：目前监听 ops 仓库 `production/*`，自动 selfHeal/prune；新增目录一旦进入其目标 revision 就可能上线。按发布范围确认后交付该目录，保留其他工作树修改。
+5. 等待 PVC Bound、Pod Ready、HTTPRoute Accepted/ResolvedRefs，并确认 DNS 与 HTTPS。当前 ExternalDNS 已启用 gateway-httproute source，预期由新路由创建 `kubegrant.clusters.zjusct.io` 的记录，不另行手工维护同一记录。
+6. 使用真实测试账号验收：普通成员看不到管理接口；admins 成员有管理权限；创建/撤回授权和审计一致；退出后旧会话不可用。该阶段只验收平台记录，不宣称集群授权已生效。
+
+出现问题时，优先回退到已验证镜像 digest，并保留 PVC。首次发布尚无旧镜像可回退时，可暂停该应用自动同步并将副本调整为 0，保留数据库和审计；不要删除 Namespace/PVC。涉及数据库格式变更的版本，镜像回退前另行核对兼容性，不能直接让旧程序打开未知版本数据库。
+
+2026-10-16（Asia/Shanghai）准备核验：m601 上已从提交 `392bd82` 成功构建容器；现有 Gateway 的通配 HTTPS listener 和证书可用于规划域名，绕过 DNS 指定 172.28.0.1 访问时证书校验通过、返回 404（平台路由尚未发布）。集群 RBD CSI 为 cephcsi v3.16.0，仍需用本应用实际 PVC 的 Bound/挂载结果完成 RWOP 验收。尚未同步生产应用工作负载，也未修改主机运维入口。
 
 在已入域的管理机上生成公共 CA 配置清单：
 
