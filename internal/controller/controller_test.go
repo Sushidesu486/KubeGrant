@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -184,6 +185,7 @@ type environment struct {
 	g       grant.Grant
 	session storage.Session
 	token   string
+	dbPath  string
 	clock   atomic.Int64
 }
 
@@ -192,7 +194,8 @@ func setup(t *testing.T) *environment {
 	e := &environment{}
 	e.clock.Store(time.Now().UTC().UnixNano())
 	now := func() time.Time { return time.Unix(0, e.clock.Load()).UTC() }
-	s, err := storage.Open(filepath.Join(t.TempDir(), "db"))
+	e.dbPath = filepath.Join(t.TempDir(), "db")
+	s, err := storage.Open(e.dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,5 +433,58 @@ wait:
 	}
 	if err = e.store.PrepareDownload(ctx, e.token, items[0].ID, e.c.now()); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatal("ended session could prepare download", err)
+	}
+}
+
+func TestIdleReconciliationLeavesWriterAvailable(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	start := e.c.now()
+	e.round(t)
+	checked := func() time.Time {
+		t.Helper()
+		g, err := e.store.Grant(ctx, e.g.ID)
+		if err != nil || g.Execution.CheckedAt == nil {
+			t.Fatalf("missing execution observation: %v", err)
+		}
+		return *g.Execution.CheckedAt
+	}
+	// Hold the same write lock as a concurrent Web transaction.
+	writer, err := sql.Open("sqlite", e.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	conn, err := writer.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	e.clock.Add(int64(2 * time.Second))
+	e.round(t)
+	if _, err = conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if !checked().Equal(start) || !e.c.lastHeartbeat.Equal(start) {
+		t.Fatal("idle round rewrote a fresh observation")
+	}
+	e.clock.Add(int64(observationRefresh))
+	e.round(t)
+	if !checked().Equal(e.c.now()) || !e.c.lastHeartbeat.Equal(e.c.now()) {
+		t.Fatal("active grant and heartbeat must refresh before expiry")
+	}
+	e.clock.Add(int64(2 * time.Hour))
+	e.round(t)
+	removed := checked()
+	if len(e.f.bindings) != 0 {
+		t.Fatal("expired binding survived reconciliation")
+	}
+	e.clock.Add(int64(time.Minute))
+	e.round(t)
+	if !checked().Equal(removed) {
+		t.Fatal("settled expiry rewrote its execution record")
 	}
 }

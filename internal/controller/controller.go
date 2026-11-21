@@ -19,6 +19,9 @@ import (
 	"github.com/Sushidesu486/KubeGrant/internal/storage"
 )
 
+// The API accepts observations for 30 seconds. Refresh healthy records well inside that window.
+const observationRefresh = 10 * time.Second
+
 type API interface {
 	CheckRole(context.Context, string) error
 	ListBindings(context.Context, string) ([]kube.Binding, error)
@@ -38,6 +41,7 @@ type Controller struct {
 	ClusterID, PermissionRef string
 	CA                       []byte
 	Now                      func() time.Time
+	lastHeartbeat            time.Time
 }
 
 func Instance(cluster string) string {
@@ -66,8 +70,6 @@ func (c *Controller) Run(ctx context.Context, logger *slog.Logger) error {
 	if c.Store == nil || c.API == nil || c.ClusterID == "" || c.PermissionRef == "" || len(c.CA) == 0 {
 		return errors.New("controller configuration incomplete")
 	}
-	timer := time.NewTicker(2 * time.Second)
-	defer timer.Stop()
 	for {
 		if err := c.Round(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("reconciliation incomplete", "error", err)
@@ -75,7 +77,7 @@ func (c *Controller) Run(ctx context.Context, logger *slog.Logger) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-timer.C:
+		case <-time.After(2 * time.Second):
 		}
 	}
 }
@@ -141,10 +143,12 @@ func (c *Controller) Round(ctx context.Context) error {
 			failures = append(failures, err)
 		}
 	}
-	if len(failures) == 0 {
-		if err = c.Store.Heartbeat(ctx, c.ClusterID, c.PermissionRef, c.now()); err != nil {
+	observed := c.now()
+	if len(failures) == 0 && (observed.Before(c.lastHeartbeat) || observed.Sub(c.lastHeartbeat) >= observationRefresh) {
+		if err = c.Store.Heartbeat(ctx, c.ClusterID, c.PermissionRef, observed); err != nil {
 			return err
 		}
+		c.lastHeartbeat = observed
 	}
 	after := ""
 	for {
@@ -209,6 +213,9 @@ func (c *Controller) reconcileGrant(ctx context.Context, g storage.GrantRecord, 
 		if g.ActiveAt(c.now()) {
 			return errors.New("grant role no longer configured")
 		}
+		if !exists && g.Execution.State == state && g.Execution.BindingUID == "" && g.Execution.ErrorCode == "" {
+			return nil
+		}
 		return c.Store.SetExecution(ctx, g.ID, state, "", "", c.now())
 	}
 	if !exists {
@@ -222,7 +229,14 @@ func (c *Controller) reconcileGrant(ctx context.Context, g storage.GrantRecord, 
 		}
 		bindings[name] = b
 	}
-	if err := c.Store.SetExecution(ctx, g.ID, "applied", b.Metadata.UID, "", c.now()); err != nil {
+	now := c.now()
+	if exists && g.Execution.State == "applied" && g.Execution.BindingUID == b.Metadata.UID && g.Execution.ErrorCode == "" && g.Execution.CheckedAt != nil {
+		age := now.Sub(*g.Execution.CheckedAt)
+		if age >= 0 && age < observationRefresh {
+			return nil
+		}
+	}
+	if err := c.Store.SetExecution(ctx, g.ID, "applied", b.Metadata.UID, "", now); err != nil {
 		// Revocation may have committed while the API create was in flight.
 		fresh, getErr := c.Store.Grant(ctx, g.ID)
 		if getErr == nil && !fresh.ActiveAt(c.now()) {
